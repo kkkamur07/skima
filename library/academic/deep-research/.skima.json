@@ -1,0 +1,12 @@
+{
+  "id": "deep-research",
+  "kind": "skill",
+  "bucket": "academic",
+  "status": "active",
+  "provenance": {
+    "source": "academic-research-skills",
+    "url": "https://github.com/imbad0202/academic-research-skills",
+    "path": "deep-research",
+    "revision": "49e79a7c99296e431cecce60225bf8f5393f3fbb"
+  }
+}

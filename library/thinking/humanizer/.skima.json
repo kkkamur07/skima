@@ -1,7 +1,12 @@
 {
   "id": "humanizer",
-  "kind": "skill",
+  "kind": "plugin",
   "bucket": "thinking",
   "status": "active",
-  "provenance": null
+  "provenance": {
+    "source": "humanizer",
+    "url": "https://github.com/blader/humanizer",
+    "path": ".",
+    "revision": "523374dee72d67c7b2b5f858ea0094ffda49c3ac"
+  }
 }

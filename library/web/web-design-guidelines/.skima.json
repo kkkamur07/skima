@@ -3,5 +3,10 @@
   "kind": "skill",
   "bucket": "web",
   "status": "active",
-  "provenance": null
+  "provenance": {
+    "source": "vercel-agent-skills",
+    "url": "https://github.com/vercel-labs/agent-skills",
+    "path": "skills/web-design-guidelines",
+    "revision": "f8a72b9603728bb92a217a879b7e62e43ad76c81"
+  }
 }

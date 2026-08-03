@@ -3,5 +3,10 @@
   "kind": "skill",
   "bucket": "web",
   "status": "active",
-  "provenance": null
+  "provenance": {
+    "source": "supabase-agent-skills",
+    "url": "https://github.com/supabase/agent-skills",
+    "path": "skills/supabase",
+    "revision": "1356046015476711a769601079262b5635929427"
+  }
 }

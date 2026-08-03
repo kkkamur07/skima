@@ -3,5 +3,10 @@
   "kind": "skill",
   "bucket": "engineering",
   "status": "active",
-  "provenance": null
+  "provenance": {
+    "source": "agent-skills",
+    "url": "https://github.com/addyosmani/agent-skills",
+    "path": "skills/ci-cd-and-automation",
+    "revision": "d187883b7d761265309cdcc0f202cc76b4b3fb06"
+  }
 }

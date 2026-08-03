@@ -34,6 +34,11 @@
       "url": "https://github.com/malkreide/socratic-method-skill.git",
       "revision": "7bf0d1d73d9e9b854c13b745fc87f4b0b66bb232",
       "path": "sources/socratic-method-skill"
+    },
+    "humanizer": {
+      "url": "https://github.com/blader/humanizer",
+      "revision": "523374dee72d67c7b2b5f858ea0094ffda49c3ac",
+      "path": "sources/humanizer"
     }
   }
 }

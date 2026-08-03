@@ -3,5 +3,10 @@
   "kind": "skill",
   "bucket": "thinking",
   "status": "active",
-  "provenance": null
+  "provenance": {
+    "source": "mattpocock-skills",
+    "url": "https://github.com/mattpocock/skills",
+    "path": "skills/engineering/grill-with-docs",
+    "revision": "2bf70051928429983de3b5718d277150926f8c89"
+  }
 }

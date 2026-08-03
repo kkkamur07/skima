@@ -1,5 +1,5 @@
 ---
-name: Kanban Board
+name: kanban-board
 description: >-
   Build issues/dag.md, issues/kanban.md, and issues/board.json from local issue
   files; enforce WIP limits; optional static viewer. Use for "Regenerate the
