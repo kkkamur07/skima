@@ -29,6 +29,7 @@ Findings from a conformance audit against `CONTEXT.md`, and what was done.
 - [x] **ADRs 0004–0009** written for decisions `CONTEXT.md` presented as settled but that had no record.
 - [x] **`CONTEXT.md` gaps closed** — it required every Capability to have an Id, Kind, Bucket, Status and Provenance without saying where any of them are written down, and left Id and Status encoded twice with no tie-break.
 - [x] **`engineering` Bucket split** into architecture, ops, planning, quality, review and security; it had grown into a catch-all holding 17 of 33 Capabilities.
+- [x] **Agent directories reconciled.** Running install against the real machine surfaced three entries Skima did not manage. `teach` and `diagnose` were byte-identical to tracked upstream and were adopted into the Library; `socratic-thinking` (an older copy of socratic-method under the wrong Id) and a loose top-level `SKILL.md` were stale duplicates and were removed from `~/.cursor/skills`, archived first at `backups/20260803-144647/unmanaged-cursor-skills/`. All three targets are now 100% Skima-managed: 35 symlinks each, no foreign entries, no broken links.
 
 ## Open
 
@@ -38,10 +39,7 @@ Findings from a conformance audit against `CONTEXT.md`, and what was done.
 - [ ] **No Codex Install target.** `CONTEXT.md` names Codex as an example Agent but defines no skills path for it. Not invented; a one-line addition to the CLI's agent table once the path is known.
 - [ ] **Copy-fallback entries are never auto-removed** when a Capability is deprecated — indistinguishable from a directory the user created, so they are reported and left alone. Symlinks into this Library are provably Skima-created and *are* cleaned up.
 - [ ] `library/web/react-best-practices` inherits upstream's frontmatter `name: vercel-react-best-practices`, so Skima and the consuming Agent report different names for it. Left alone deliberately (ADR-0006); revisit only if it causes real confusion.
-- [ ] **Two stale duplicates still sit in `~/.cursor/skills`** and are loaded by Cursor alongside the correct Library copies. Both are archived at `backups/20260803-144647/unmanaged-cursor-skills/`; removing them is two commands:
-      `rm -rf ~/.cursor/skills/socratic-thinking` (an older copy of socratic-method under the wrong Id) and
-      `rm -f ~/.cursor/skills/SKILL.md` (the diagnose skill as a loose file, now adopted as `library/quality/diagnose`).
-- [ ] The CLI's "not managed" report lists only directories, so a loose *file* dropped into a target — like that stray `SKILL.md` — is reported but easy to miss as a malformed capability rather than an ordinary foreign entry.
+- [ ] The CLI's "not managed" report lists only directories, so a loose *file* dropped into a target is reported but easy to miss as a malformed capability rather than an ordinary foreign entry.
 - [ ] No git remote configured — the Monorepo has local history only, and `backups/` is gitignored, so both exist on this machine alone.
 
 ## Deferred
