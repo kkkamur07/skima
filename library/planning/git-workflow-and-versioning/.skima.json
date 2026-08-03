@@ -1,0 +1,12 @@
+{
+  "id": "git-workflow-and-versioning",
+  "kind": "skill",
+  "bucket": "planning",
+  "status": "active",
+  "provenance": {
+    "source": "agent-skills",
+    "url": "https://github.com/addyosmani/agent-skills",
+    "path": "skills/git-workflow-and-versioning",
+    "revision": "d187883b7d761265309cdcc0f202cc76b4b3fb06"
+  }
+}

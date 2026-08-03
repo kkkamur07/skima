@@ -1,0 +1,12 @@
+{
+  "id": "code-review-and-quality",
+  "kind": "skill",
+  "bucket": "review",
+  "status": "active",
+  "provenance": {
+    "source": "agent-skills",
+    "url": "https://github.com/addyosmani/agent-skills",
+    "path": "skills/code-review-and-quality",
+    "revision": "d187883b7d761265309cdcc0f202cc76b4b3fb06"
+  }
+}

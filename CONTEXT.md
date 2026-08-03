@@ -41,7 +41,7 @@ An **Agent** **Skima** has detected on the machine and will attempt to install i
 _Avoid_: destination, sink
 
 **Bucket**:
-An evolving, user-defined primary home for a **Capability**, grouped by domain of use (e.g. academic, web, python, thinking, learning). On disk: `library/<bucket>/<id>/`. Buckets are added and renamed as the **Library** grows — not a fixed enum.
+An evolving, user-defined primary home for a **Capability**, grouped by domain of use (e.g. academic, web, python, thinking, security, review, architecture, quality, planning, ops, learning). On disk: `library/<bucket>/<id>/`. Buckets are added and renamed as the **Library** grows — not a fixed enum.
 _Avoid_: category, folder (too generic), tag (tags are cross-cutting, not the primary home)
 
 **Status**:
@@ -81,7 +81,7 @@ The per-**Capability** metadata file at `library/<bucket>/<id>/.skima.json`. It 
 _Avoid_: manifest (upstream capabilities ship their own), frontmatter (that is upstream's, not Skima's), sidecar
 
 **Source status**:
-The freshness of a tracked **Source** as of the last check: `up-to-date`, `behind`, or `unreachable` — its pinned **Revision** compared against the upstream head. Written to `.skima/status.json`, which is derived, per-machine, and not source of truth. It is the input that tells **Change review** which **Sources** are worth reviewing; it is not itself the review.
+The recorded result of a **Check** for one **Source** — `up-to-date`, `behind`, or `unreachable` — as of when that **Check** ran. **Check** is the act of comparing; **Source status** is what it wrote down. Lives in `.skima/status.json`, which is derived, per-machine, and never committed, so a **Source status** is always as stale as the last **Check**. It tells **Change review** which **Sources** are worth reviewing; it is not itself the review.
 _Avoid_: sync state, health (too broad), drift
 
 **Source list**:
@@ -111,7 +111,8 @@ _Avoid_: deploy, publish, sync (sync is for Sources)
 - Day-1 seed (done, 2026-08-03): the former `repos/` seeded `sources/` and the former `skills-use/` seeded `library/` by **Bucket**; both original trees now live only under `backups/`, and `~/.cursor/skills` is reconciled by **Install** (it was never a second Library)
 - Every **Capability** has exactly one **Id**, belongs to exactly one **Bucket**, has exactly one **Status**, and has exactly one **Kind**
 - Every **Capability** has exactly one **Capability record**, which is where those four facts and its **Provenance** are written; the directory layout is authoritative wherever the two disagree
-- **Source status** is refreshed by the **CLI** against each **Source**'s pinned **Revision** and tells **Change review** which **Sources** are behind; it is derived state, so it is never committed
+- A **Check** compares each **Source**'s pinned **Revision** to its remote head and records a **Source status**; that status is derived, per-machine state, so it is never committed
+- **Install target** detection is real: **Skima** writes only to **Agents** it finds on the machine, and never creates a skills directory for an **Agent** that is not installed
 - A **Library** contains many **Capabilities** and many evolving **Buckets**
 - **Skima** tracks zero or more **Sources** (shown in the **Source list**); sync refreshes committed trees under `sources/` to a newer **Revision**
 - A **Capability** may originate from a **Source** (via **Adoption**) or be authored directly in the **Library**
@@ -156,6 +157,18 @@ _(none)_
 
 > **Dev:** "I installed socratic-thinking but upstream is socratic-method — which Id do we keep?"
 > **Domain expert:** "Upstream **Id** `socratic-method`. The local rename was a mistake to correct at **Adoption**."
+
+> **Dev:** "This skill's frontmatter says `vercel-react-best-practices` but the folder is `react-best-practices`. Which is the Id?"
+> **Domain expert:** "The folder. That frontmatter is upstream's display text and upstream's own inconsistency — we inherit it rather than editing it, because a local edit would show up as a phantom diff in every future **Change review**."
+
+> **Dev:** "Where is a Capability's Kind actually written down?"
+> **Domain expert:** "Its **Capability record**, `.skima.json`. **Kind** and **Provenance** live only there. **Id**, **Bucket** and **Status** are in there too, but the directory wins if they ever disagree."
+
+> **Dev:** "I moved something into library/deprecated/ but its record still says active. Does it get installed?"
+> **Domain expert:** "No. The directory is authoritative, so it's deprecated and **Install** skips it. The stale record is a validation warning to fix, not a vote."
+
+> **Dev:** "`skima check` says a Source is behind. Is that the Change review?"
+> **Domain expert:** "No — that's a **Source status**, the result of a **Check**. It tells you a **Source** moved past its pin, which is what makes it worth reviewing. The review itself is where you see what changed and decide."
 
 > **Dev:** "Where do I see what repos I'm tracking?"
 > **Domain expert:** "The **Source list** — every **Source** under `sources/` that feeds **Change review**."
