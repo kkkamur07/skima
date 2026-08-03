@@ -1,0 +1,12 @@
+{
+  "id": "socratic-method",
+  "kind": "skill",
+  "bucket": "thinking",
+  "status": "active",
+  "provenance": {
+    "source": "socratic-method-skill",
+    "url": "https://github.com/malkreide/socratic-method-skill",
+    "path": ".",
+    "revision": "7bf0d1d73d9e9b854c13b745fc87f4b0b66bb232"
+  }
+}

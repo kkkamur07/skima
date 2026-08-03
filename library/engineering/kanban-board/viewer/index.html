@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Issue board</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: false, theme: "neutral" });
+      window.mermaid = mermaid;
+    </script>
+  </head>
+  <body>
+    <header>
+      <h1>Issue board</h1>
+      <p id="meta">Loading…</p>
+      <p id="limits" class="limits"></p>
+    </header>
+    <main class="layout">
+      <section class="panel">
+        <h2>Dependency graph</h2>
+        <div id="graph" class="graph"></div>
+      </section>
+      <section class="panel">
+        <h2>Kanban</h2>
+        <div id="board" class="board"></div>
+      </section>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

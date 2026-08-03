@@ -1,0 +1,12 @@
+# Copy to issues/board-config.yaml in your project to override defaults.
+
+wip:
+  in_progress: 4       # column WIP limit (AFK + HITL combined)
+  review: 5            # column WIP limit
+
+parallel:
+  max_lanes: 2         # AFK lanes agent can use without approval
+
+viewer:
+  enabled: true
+  output_dir: tools/issue-board

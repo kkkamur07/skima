@@ -1,0 +1,9 @@
+# Source freshness via `git ls-remote`, not cron
+
+Skima needs to know when a tracked **Source** has moved past its pinned **Revision**. We considered making a background job (cron/launchd) the mechanism for detecting this — polling every Source on a schedule and pushing notifications. We rejected cron as the core mechanism: it adds a persistent background process to a personal, local-only tool, it can silently stop running (laptop asleep, job not installed after a fresh clone), and it doesn't fit a CLI + Web UI that's opened on demand rather than always running.
+
+Instead, **Check** is a plain comparison: `skima check` runs `git ls-remote <url> HEAD` (falling back to `refs/heads/main` / `refs/heads/master`) for each Source in `sources.json` and compares the returned sha to the pinned Revision. This needs no clone and no daemon — it's correct and cheap to run whenever the user wants an answer, and it degrades gracefully (a Source that can't be reached is reported as `unreachable`, not treated as a failure of the whole command). Results are written to `.skima/status.json`, a local, gitignored file, so the Web UI can read Source freshness without re-running the check itself.
+
+**Sync** is a separate, explicit action (`skima sync [name...]`): it shallow-clones a Source at remote HEAD, rsyncs the tree into `sources/<name>/`, and updates the pinned Revision in `sources.json`. Sync never touches `library/` — refreshing a Source's tree is not the same as **Adoption**, which stays a deliberate, curated step through Change review.
+
+Cron/launchd remains available as an *optional* wrapper — anyone who wants a background nudge can schedule `skima check` themselves — but Skima does not require, install, or depend on one for correctness. On-demand `skima check` plus the Web UI reading `.skima/status.json` is the primary path.

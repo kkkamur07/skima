@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C library/thinking/humanizer remote -v)",
+      "Bash(git -C library/thinking/humanizer log -1 --format=%H)",
+      "Bash(git -C . rev-parse --show-toplevel)",
+      "Bash(./cli/skima check *)",
+      "Bash(echo \"rc=$?\")",
+      "Bash(md5 library/web/supabase/SKILL.md library/python/supabase-postgres-best-practices/SKILL.md sources/supabase-agent-skills/skills/supabase/SKILL.md sources/supabase-agent-skills/skills/supabase-postgres-best-practices/SKILL.md)",
+      "Bash(md5 atomic-decomposition/SKILL.md deep-research/SKILL.md sources/academic-research-skills/deep-research/SKILL.md)",
+      "Bash(bash --version)",
+      "Bash(/bin/bash --version)",
+      "Read(//private/tmp/**)",
+      "Bash(curl -s -H \"Host: evil.example.com\" http://127.0.0.1:4599/api/sources)",
+      "Bash(curl -s -i -X POST -H \"Origin: https://evil.example.com\" http://127.0.0.1:4599/api/check)",
+      "Bash(awk -F/ '{print $3}')",
+      "Bash(python3 -c \"import sys,json,re;print\\(sorted\\({k for m in re.findall\\(r'\\\\{[^{}]*\\(?:\\\\{[^{}]*\\\\}[^{}]*\\)*\\\\}',sys.stdin.read\\(\\)\\) for k in \\(json.loads\\(m\\).keys\\(\\) if m.strip\\(\\).startswith\\('{'\\) else []\\)}\\)\\)\")",
+      "Bash(md5 cli/skima)",
+      "Bash(python3 -)",
+      "Bash(pkill -f \"server.py 4599\")",
+      "Bash(python3 -c ' *)",
+      "Bash(HOME=/private/tmp/claude-501/-Users-krishuagarwal-Desktop-Programming-skills/0802e649-2b40-43be-be86-1edd8bc4c4fc/scratchpad/fake/home /bin/bash /private/tmp/claude-501/-Users-krishuagarwal-Desktop-Programming-skills/0802e649-2b40-43be-be86-1edd8bc4c4fc/scratchpad/fake/repo/cli/skima install)",
+      "Bash(cp cli/skima /private/tmp/claude-501/-Users-krishuagarwal-Desktop-Programming-skills/0802e649-2b40-43be-be86-1edd8bc4c4fc/scratchpad/snap-skima)",
+      "Bash(md5 /private/tmp/claude-501/-Users-krishuagarwal-Desktop-Programming-skills/0802e649-2b40-43be-be86-1edd8bc4c4fc/scratchpad/snap-skima)",
+      "Bash(ps -axo pid,etime,command)",
+      "Bash(set -e)",
+      "Bash(mkdir -p backups/20260803-144647/nested-git)",
+      "Bash(tar -czf backups/20260803-144647/nested-git/humanizer-dot-git.tar.gz -C library/thinking/humanizer .git)",
+      "Bash(git -C library/thinking/humanizer rev-parse HEAD)",
+      "Bash(git -C library/thinking/humanizer log -1 --format='%H %ci')",
+      "Bash(git -C library/thinking/humanizer status --porcelain)",
+      "Bash(git init *)",
+      "Bash(git add *)",
+      "Bash(grep -c '\\\\.log$')"
+    ]
+  }
+}

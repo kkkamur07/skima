@@ -1,0 +1,806 @@
+#!/usr/bin/env bash
+# Skima CLI — install active Library capabilities into detected coding agents.
+# See CONTEXT.md at the monorepo root for the domain model this script follows.
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+# Resolve the monorepo root as the parent of this script's real directory,
+# following symlinks so `skima` still works if it's symlinked onto PATH.
+resolve_root() {
+  local src="${BASH_SOURCE[0]}"
+  while [ -h "$src" ]; do
+    local dir
+    dir="$(cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd)"
+    src="$(readlink "$src")"
+    case "$src" in
+      /*) ;;
+      *) src="$dir/$src" ;;
+    esac
+  done
+  local script_dir
+  script_dir="$(cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd)"
+  (cd -P "$script_dir/.." >/dev/null 2>&1 && pwd)
+}
+
+ROOT="$(resolve_root)"
+LIBRARY_DIR="$ROOT/library"
+SOURCES_JSON="$ROOT/sources.json"
+STATUS_DIR="$ROOT/.skima"
+STATUS_FILE="$STATUS_DIR/status.json"
+
+CURSOR_TARGET="$HOME/.cursor/skills"
+CLAUDE_TARGET="$HOME/.claude/skills"
+AGENTS_TARGET="$HOME/.agents/skills"
+
+# ---------------------------------------------------------------------------
+# Output: color only when stdout is a TTY and NO_COLOR isn't set. Every
+# message must stay readable with these as empty strings.
+# ---------------------------------------------------------------------------
+
+supports_color() {
+  [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]
+}
+
+if supports_color; then
+  COLOR_ENABLED=1
+  C_RESET=$'\033[0m'
+  C_BOLD=$'\033[1m'
+  C_DIM=$'\033[2m'
+  C_GREEN=$'\033[32m'
+  C_YELLOW=$'\033[33m'
+  C_RED=$'\033[31m'
+else
+  COLOR_ENABLED=0
+  C_RESET=""
+  C_BOLD=""
+  C_DIM=""
+  C_GREEN=""
+  C_YELLOW=""
+  C_RED=""
+fi
+
+rel_path() {
+  local p="$1"
+  case "$p" in
+    "$ROOT"/*) printf '%s\n' "${p#"$ROOT"/}" ;;
+    *) printf '%s\n' "$p" ;;
+  esac
+}
+
+# Field separator for internal name/url/sha/status rows below. Deliberately
+# NOT a tab: bash's `read`/word-splitting treats tab as IFS whitespace and
+# collapses consecutive delimiters, which silently eats empty fields (e.g. a
+# blank "remote" sha when a source is unreachable). \x1f (ASCII Unit
+# Separator) is never collapsed and never appears in URLs/shas/names.
+FS=$'\x1f'
+
+# ---------------------------------------------------------------------------
+# Library discovery
+# ---------------------------------------------------------------------------
+
+# Prints one line per active Capability: "<bucket>\t<id>\t<absolute-path>"
+#
+# A Capability is a directory directly under library/<bucket>/ (not
+# library/deprecated/) whose root contains SKILL.md or .skima.json. Nested
+# docs/support directories (e.g. library/thinking/socratic-method/docs) are
+# not treated as separate Capabilities.
+list_active_capabilities() {
+  local bucket_path bucket cap_path id
+  for bucket_path in "$LIBRARY_DIR"/*/; do
+    [ -d "$bucket_path" ] || continue
+    bucket="$(basename "$bucket_path")"
+    [ "$bucket" = "deprecated" ] && continue
+    for cap_path in "$bucket_path"*/; do
+      [ -d "$cap_path" ] || continue
+      id="$(basename "$cap_path")"
+      if [ -f "${cap_path}SKILL.md" ] || [ -f "${cap_path}.skima.json" ]; then
+        printf '%s\t%s\t%s\n' "$bucket" "$id" "$(cd "$cap_path" && pwd)"
+      fi
+    done
+  done
+}
+
+# ---------------------------------------------------------------------------
+# Install primitive: symlink first, copy fallback, staged for safety.
+# Sets global INSTALL_RESULT to one of: linked | copied | skipped | <error>.
+# ---------------------------------------------------------------------------
+
+INSTALL_RESULT=""
+
+install_one() {
+  local dest="$1" src="$2"
+
+  if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$src" ]; then
+    INSTALL_RESULT="skipped"
+    return 0
+  fi
+
+  local tmp="${dest}.skima-tmp-$$"
+  rm -rf "$tmp" 2>/dev/null || true
+
+  # Stage the symlink at a temp path, then atomically swap it in. This means
+  # we only ever remove the existing dest (symlink, plain dir, or file) once
+  # we already have a working replacement ready to move into place.
+  if ln -s "$src" "$tmp" 2>/dev/null; then
+    if rm -rf "$dest" 2>/dev/null && mv "$tmp" "$dest" 2>/dev/null; then
+      INSTALL_RESULT="linked"
+      return 0
+    fi
+  fi
+  rm -rf "$tmp" 2>/dev/null || true
+
+  # Symlink failed (e.g. filesystem doesn't support it) — fall back to copy.
+  if cp -R "$src" "$tmp" 2>/dev/null; then
+    if rm -rf "$dest" 2>/dev/null && mv "$tmp" "$dest" 2>/dev/null; then
+      INSTALL_RESULT="copied"
+      return 0
+    fi
+  fi
+  rm -rf "$tmp" 2>/dev/null || true
+
+  INSTALL_RESULT="symlink and copy fallback both failed"
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Network helpers: bound how long we'll wait on an unreachable remote.
+# ---------------------------------------------------------------------------
+
+SKIMA_NETWORK_TIMEOUT="${SKIMA_NETWORK_TIMEOUT:-10}"
+
+# Runs "$@" with a wall-clock timeout in seconds, since neither `timeout` nor
+# `gtimeout` are guaranteed to be installed. Prints the command's combined
+# output and returns its exit code, or 124 on timeout.
+with_timeout() {
+  local secs="$1"; shift
+  local out_file
+  out_file="$(mktemp)"
+
+  ("$@" >"$out_file" 2>&1) &
+  local pid=$!
+  local waited=0
+  local max=$((secs * 5))
+
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$waited" -ge "$max" ]; then
+      pkill -TERM -P "$pid" 2>/dev/null || true
+      kill -TERM "$pid" 2>/dev/null || true
+      sleep 0.3
+      pkill -KILL -P "$pid" 2>/dev/null || true
+      kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      cat "$out_file"
+      rm -f "$out_file"
+      return 124
+    fi
+    sleep 0.2
+    waited=$((waited + 1))
+  done
+
+  wait "$pid"
+  local rc=$?
+  cat "$out_file"
+  rm -f "$out_file"
+  return $rc
+}
+
+# Resolves the remote HEAD sha for a git URL, trying HEAD then common default
+# branch refs. Prints the sha on stdout and returns 0, or returns 1 if the
+# remote could not be reached / resolved.
+git_remote_head() {
+  local url="$1"
+  local ref out sha
+
+  export GIT_TERMINAL_PROMPT=0
+  : "${GIT_SSH_COMMAND:=ssh -o BatchMode=yes -o ConnectTimeout=$SKIMA_NETWORK_TIMEOUT -o StrictHostKeyChecking=accept-new}"
+  export GIT_SSH_COMMAND
+
+  for ref in HEAD refs/heads/main refs/heads/master; do
+    if out="$(with_timeout "$SKIMA_NETWORK_TIMEOUT" git ls-remote "$url" "$ref" 2>/dev/null)"; then
+      sha="$(printf '%s\n' "$out" | awk '{print $1}' | head -n1)"
+      if [ -n "$sha" ]; then
+        printf '%s' "$sha"
+        return 0
+      fi
+    fi
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Source helpers: read/write sources.json and .skima/status.json.
+# Source list parsing and JSON I/O use python3 (stdlib-only, same convention
+# as web/server.py) since bash has no safe native JSON support.
+# ---------------------------------------------------------------------------
+
+ensure_sources_json_or_die() {
+  if [ ! -f "$SOURCES_JSON" ]; then
+    echo "skima: sources.json not found at $(rel_path "$SOURCES_JSON")" >&2
+    exit 1
+  fi
+}
+
+# Prints "name<FS>url<FS>revision" for each source in sources.json, one per
+# line, sorted by name. With args, filters to just those names.
+list_sources() {
+  python3 - "$SOURCES_JSON" "$@" <<'PY'
+import json
+import sys
+
+FS = "\x1f"
+path = sys.argv[1]
+filter_names = set(sys.argv[2:])
+
+with open(path, encoding="utf-8") as f:
+    data = json.load(f)
+
+sources = data.get("sources", {}) or {}
+names = sorted(sources)
+if filter_names:
+    names = [n for n in names if n in filter_names]
+
+for name in names:
+    s = sources[name] or {}
+    print(FS.join([name, s.get("url", ""), s.get("revision", "")]))
+PY
+}
+
+# Populates the global CHECK_ROWS array with one FS-separated row per source:
+# name<FS>url<FS>pinned<FS>remote<FS>status<FS>error (remote/error are "" when
+# absent). Also sets CHECK_TOTAL and CHECK_UNREACHABLE. With args, restricts
+# to those source names (used by `sync` to re-check just what it touched).
+CHECK_ROWS=()
+CHECK_TOTAL=0
+CHECK_UNREACHABLE=0
+
+collect_check_rows() {
+  local rows
+  rows="$(list_sources "$@")" || return 1
+
+  CHECK_ROWS=()
+  CHECK_TOTAL=0
+  CHECK_UNREACHABLE=0
+
+  local name url pinned remote status err
+  while IFS="$FS" read -r name url pinned; do
+    [ -z "$name" ] && continue
+    CHECK_TOTAL=$((CHECK_TOTAL + 1))
+    remote=""
+    err=""
+    if remote="$(git_remote_head "$url")"; then
+      if [ "$remote" = "$pinned" ]; then
+        status="up-to-date"
+      else
+        status="behind"
+      fi
+    else
+      remote=""
+      status="unreachable"
+      err="git ls-remote failed (network unreachable, auth required, or repository moved)"
+      CHECK_UNREACHABLE=$((CHECK_UNREACHABLE + 1))
+    fi
+    CHECK_ROWS+=("${name}${FS}${url}${FS}${pinned}${FS}${remote}${FS}${status}${FS}${err}")
+  done <<< "$rows"
+
+  return 0
+}
+
+colorize_status() {
+  local status="$1"
+  case "$status" in
+    up-to-date)   printf '%s%s%s' "$C_GREEN" "$status" "$C_RESET" ;;
+    behind)       printf '%s%s%s' "$C_YELLOW" "$status" "$C_RESET" ;;
+    unreachable)  printf '%s%s%s' "$C_RED" "$status" "$C_RESET" ;;
+    *)            printf '%s' "$status" ;;
+  esac
+}
+
+print_check_table() {
+  printf '%b%-26s  %-12s  %-12s  %s%b\n' "$C_BOLD" "NAME" "PINNED" "REMOTE" "STATUS" "$C_RESET"
+  local row name url pinned remote status err pinned_short remote_short
+  for row in "${CHECK_ROWS[@]}"; do
+    IFS="$FS" read -r name url pinned remote status err <<< "$row"
+    pinned_short="${pinned:0:12}"
+    remote_short="—"
+    [ -n "$remote" ] && remote_short="${remote:0:12}"
+    printf '%-26s  %-12s  %-12s  %s\n' "$name" "$pinned_short" "$remote_short" "$(colorize_status "$status")"
+  done
+}
+
+# Writes CHECK_ROWS to .skima/status.json. mode "full" replaces the whole
+# sources map (used by `check`); mode "merge" only updates the rows present
+# and preserves other existing entries (used by `sync` for the sources it
+# touched).
+write_status_json() {
+  local mode="${1:-full}"
+  local rows_file
+  rows_file="$(mktemp)"
+  printf '%s\n' "${CHECK_ROWS[@]}" > "$rows_file"
+
+  python3 - "$STATUS_FILE" "$mode" "$rows_file" <<'PY'
+import json
+import sys
+import datetime
+
+FS = "\x1f"
+out_path, mode, rows_path = sys.argv[1], sys.argv[2], sys.argv[3]
+
+existing = {}
+try:
+    with open(out_path, encoding="utf-8") as f:
+        loaded = json.load(f)
+        if isinstance(loaded, dict):
+            existing = loaded
+except (FileNotFoundError, json.JSONDecodeError):
+    pass
+
+sources = dict(existing.get("sources", {})) if mode == "merge" else {}
+
+with open(rows_path, encoding="utf-8") as f:
+    for line in f:
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        name, url, pinned, remote, status, error = line.split(FS)
+        sources[name] = {
+            "url": url,
+            "pinned": pinned,
+            "remote": remote or None,
+            "status": status,
+            "error": error or None,
+        }
+
+payload = {
+    "checked_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "sources": sources,
+}
+
+with open(out_path, "w", encoding="utf-8") as f:
+    json.dump(payload, f, indent=2)
+    f.write("\n")
+PY
+  local rc=$?
+  rm -f "$rows_file"
+  return $rc
+}
+
+# Updates a single source's pinned revision in sources.json in place,
+# preserving key order and 2-space indent.
+update_source_revision() {
+  local name="$1" sha="$2"
+  python3 - "$SOURCES_JSON" "$name" "$sha" <<'PY'
+import json
+import sys
+
+path, name, sha = sys.argv[1], sys.argv[2], sys.argv[3]
+
+with open(path, encoding="utf-8") as f:
+    data = json.load(f)
+
+sources = data.setdefault("sources", {})
+if name in sources:
+    sources[name]["revision"] = sha
+
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PY
+}
+
+# Prints "url<FS>path" for one source name from sources.json.
+source_url_and_path() {
+  local name="$1"
+  python3 - "$SOURCES_JSON" "$name" <<'PY'
+import json
+import sys
+
+FS = "\x1f"
+path, name = sys.argv[1], sys.argv[2]
+
+with open(path, encoding="utf-8") as f:
+    data = json.load(f)
+
+s = (data.get("sources", {}) or {}).get(name)
+if s is None:
+    sys.exit(1)
+print(FS.join([s.get("url", ""), s.get("path", f"sources/{name}")]))
+PY
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+cmd_root() {
+  echo "$ROOT"
+}
+
+cmd_list() {
+  local count=0
+  while IFS=$'\t' read -r bucket id _src; do
+    [ -z "$id" ] && continue
+    printf '  %-12s %s\n' "$bucket" "$id"
+    count=$((count + 1))
+  done < <(list_active_capabilities | sort)
+  echo
+  echo "$count active capabilities"
+}
+
+print_target() {
+  local name="$1" path="$2" kind="$3"
+  if [ -d "$path" ]; then
+    printf '  %-8s %-34s %s\n' "$name" "$path" "$kind (exists)"
+  else
+    printf '  %-8s %-34s %s\n' "$name" "$path" "$kind (missing, created on install)"
+  fi
+}
+
+cmd_targets() {
+  echo "Install targets"
+  echo
+  print_target "cursor" "$CURSOR_TARGET" "expected"
+  print_target "claude" "$CLAUDE_TARGET" "expected"
+  if [ -d "$AGENTS_TARGET" ]; then
+    print_target "agents" "$AGENTS_TARGET" "detected"
+  else
+    printf '  %-8s %-34s %s\n' "agents" "$AGENTS_TARGET" "not present (only used when detected)"
+  fi
+}
+
+cmd_install() {
+  local total_caps
+  total_caps="$(list_active_capabilities | wc -l | tr -d ' ')"
+
+  local target_names=()
+  local target_paths=()
+  target_names+=("cursor"); target_paths+=("$CURSOR_TARGET")
+  target_names+=("claude"); target_paths+=("$CLAUDE_TARGET")
+  if [ -d "$AGENTS_TARGET" ]; then
+    target_names+=("agents"); target_paths+=("$AGENTS_TARGET")
+  fi
+
+  echo "Skima install"
+  echo "  monorepo root:       $ROOT"
+  echo "  library:             $LIBRARY_DIR"
+  echo "  active capabilities: $total_caps"
+  echo
+
+  local overall_fail=0
+  local idx
+  for idx in "${!target_names[@]}"; do
+    local name="${target_names[$idx]}"
+    local target="${target_paths[$idx]}"
+
+    if ! mkdir -p "$target" 2>/dev/null; then
+      echo "[$name] $target"
+      echo "  FAILED to create target directory"
+      echo
+      overall_fail=1
+      continue
+    fi
+
+    local linked=0 copied=0 skipped=0 fail=0
+    local fail_msgs=()
+    local known_ids=()
+
+    while IFS=$'\t' read -r bucket id src; do
+      [ -z "$id" ] && continue
+      known_ids+=("$id")
+      local dest="$target/$id"
+      if install_one "$dest" "$src"; then
+        case "$INSTALL_RESULT" in
+          linked)  linked=$((linked + 1)) ;;
+          copied)  copied=$((copied + 1)) ;;
+          skipped) skipped=$((skipped + 1)) ;;
+        esac
+      else
+        fail=$((fail + 1))
+        fail_msgs+=("$id: $INSTALL_RESULT")
+      fi
+    done < <(list_active_capabilities)
+
+    # Read-only report of entries at the target that don't correspond to any
+    # active Capability. Never touched — Skima only manages known ids.
+    local orphans=()
+    local entry base known k
+    for entry in "$target"/*; do
+      [ -e "$entry" ] || continue
+      base="$(basename "$entry")"
+      case "$base" in *.skima-tmp-*) continue ;; esac
+      known=0
+      for k in "${known_ids[@]}"; do
+        [ "$k" = "$base" ] && known=1 && break
+      done
+      [ "$known" -eq 0 ] && orphans+=("$base")
+    done
+
+    echo "[$name] $target"
+    echo "  symlinked: $linked   copied: $copied   up-to-date: $skipped   failed: $fail"
+    if [ "$fail" -gt 0 ]; then
+      overall_fail=1
+      local m
+      for m in "${fail_msgs[@]}"; do
+        echo "    FAIL $m"
+      done
+    fi
+    if [ "${#orphans[@]}" -gt 0 ]; then
+      echo "  not managed by skima (present, no matching active capability): ${orphans[*]}"
+    fi
+    echo
+  done
+
+  if [ "$overall_fail" -ne 0 ]; then
+    return 1
+  fi
+}
+
+cmd_check() {
+  ensure_sources_json_or_die
+  mkdir -p "$STATUS_DIR"
+
+  if ! collect_check_rows; then
+    echo "skima: failed to parse $(rel_path "$SOURCES_JSON") (is it valid JSON?)" >&2
+    exit 1
+  fi
+
+  if [ "$CHECK_TOTAL" -eq 0 ]; then
+    echo "No sources tracked in $(rel_path "$SOURCES_JSON")."
+    write_status_json full
+    return 0
+  fi
+
+  print_check_table
+  write_status_json full
+
+  echo
+  echo "Wrote $(rel_path "$STATUS_FILE")"
+
+  if [ "$CHECK_UNREACHABLE" -eq "$CHECK_TOTAL" ]; then
+    echo
+    echo "skima: all sources unreachable" >&2
+    return 1
+  fi
+  return 0
+}
+
+# Shallow-clones a source's url at remote HEAD into a temp dir, rsyncs it
+# into sources/<name>/ (excluding .git and .DS_Store), and updates its
+# pinned revision in sources.json. Prints progress. Never touches library/.
+sync_one() {
+  local name="$1"
+  local url path
+
+  if ! IFS="$FS" read -r url path < <(source_url_and_path "$name"); then
+    echo "[$name] FAILED: not found in sources.json"
+    return 1
+  fi
+  if [ -z "$url" ]; then
+    echo "[$name] FAILED: missing url in sources.json"
+    return 1
+  fi
+  [ -n "$path" ] || path="sources/$name"
+
+  local dest="$ROOT/$path"
+  echo "[$name] $url"
+
+  echo "  resolving remote HEAD..."
+  local sha
+  if ! sha="$(git_remote_head "$url")"; then
+    echo "  FAILED: could not reach $url"
+    return 1
+  fi
+  echo "  remote HEAD: $sha"
+
+  local tmp_dir
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/skima-sync-XXXXXX")"
+
+  echo "  cloning to temp dir..."
+  if ! with_timeout 120 git clone --quiet --depth 1 "$url" "$tmp_dir" >/tmp/skima-sync-clone.$$.log 2>&1; then
+    echo "  FAILED: git clone failed"
+    sed 's/^/    /' /tmp/skima-sync-clone.$$.log 2>/dev/null || true
+    rm -f /tmp/skima-sync-clone.$$.log
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+  rm -f /tmp/skima-sync-clone.$$.log
+
+  local cloned_sha
+  cloned_sha="$(git -C "$tmp_dir" rev-parse HEAD 2>/dev/null || true)"
+  if [ -z "$cloned_sha" ]; then
+    echo "  FAILED: could not resolve cloned HEAD"
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+
+  echo "  syncing tree into $path/ ..."
+  mkdir -p "$dest"
+  if ! rsync -a --delete --exclude='.git' --exclude='.DS_Store' "$tmp_dir/" "$dest/"; then
+    echo "  FAILED: rsync into $path/ failed"
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+  rm -rf "$tmp_dir"
+
+  echo "  updating sources.json revision -> ${cloned_sha:0:12}..."
+  update_source_revision "$name" "$cloned_sha"
+
+  echo "  done: $name @ ${cloned_sha:0:12}"
+  return 0
+}
+
+cmd_sync() {
+  ensure_sources_json_or_die
+  mkdir -p "$STATUS_DIR"
+
+  local all_names
+  all_names="$(list_sources | cut -d "$FS" -f1)"
+
+  local -a targets=()
+  if [ "$#" -eq 0 ]; then
+    while IFS= read -r n; do
+      [ -n "$n" ] && targets+=("$n")
+    done <<< "$all_names"
+  else
+    local name found n
+    for name in "$@"; do
+      found=0
+      while IFS= read -r n; do
+        [ "$n" = "$name" ] && found=1 && break
+      done <<< "$all_names"
+      if [ "$found" -eq 1 ]; then
+        targets+=("$name")
+      else
+        echo "skima: unknown source '$name' (not in sources.json), skipping" >&2
+      fi
+    done
+  fi
+
+  if [ "${#targets[@]}" -eq 0 ]; then
+    echo "skima: no sources to sync" >&2
+    exit 1
+  fi
+
+  echo "Skima sync"
+  echo "  monorepo root: $ROOT"
+  echo
+
+  local -a synced=() failed=()
+  local name
+  for name in "${targets[@]}"; do
+    if sync_one "$name"; then
+      synced+=("$name")
+    else
+      failed+=("$name")
+    fi
+    echo
+  done
+
+  if [ "${#synced[@]}" -gt 0 ]; then
+    echo "Re-checking synced sources..."
+    if collect_check_rows "${synced[@]}"; then
+      print_check_table
+      write_status_json merge
+      echo
+      echo "Wrote $(rel_path "$STATUS_FILE")"
+    fi
+    echo
+  fi
+
+  echo "synced: ${#synced[@]}   failed: ${#failed[@]}"
+  if [ "${#failed[@]}" -gt 0 ]; then
+    echo "  failed: ${failed[*]}"
+    return 1
+  fi
+}
+
+cmd_status() {
+  if [ ! -f "$STATUS_FILE" ]; then
+    echo "No status recorded yet — run 'skima check' first."
+    return 0
+  fi
+
+  python3 - "$STATUS_FILE" "$COLOR_ENABLED" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+color = sys.argv[2] == "1"
+
+RESET, BOLD, GREEN, YELLOW, RED = ("\033[0m", "\033[1m", "\033[32m", "\033[33m", "\033[31m") if color else ("", "", "", "", "")
+STATUS_COLOR = {"up-to-date": GREEN, "behind": YELLOW, "unreachable": RED}
+
+with open(path, encoding="utf-8") as f:
+    data = json.load(f)
+
+checked_at = data.get("checked_at", "unknown")
+sources = data.get("sources", {}) or {}
+
+print(f"Skima status  {BOLD}(checked_at: {checked_at}){RESET}")
+print()
+
+if not sources:
+    print("No sources recorded.")
+    sys.exit(0)
+
+names = sorted(sources)
+name_w = max(len("NAME"), max(len(n) for n in names))
+
+print(f"{BOLD}{'NAME':<{name_w}}  {'PINNED':<12}  {'REMOTE':<12}  STATUS{RESET}")
+counts = {}
+for name in names:
+    s = sources[name] or {}
+    pinned = (s.get("pinned") or "")[:12] or "—"
+    remote = (s.get("remote") or "")[:12] or "—"
+    status = s.get("status", "unknown")
+    counts[status] = counts.get(status, 0) + 1
+    c = STATUS_COLOR.get(status, "")
+    print(f"{name:<{name_w}}  {pinned:<12}  {remote:<12}  {c}{status}{RESET}")
+
+print()
+print("  ".join(f"{k}: {v}" for k, v in sorted(counts.items())))
+if any(s.get("error") for s in sources.values()):
+    print()
+    print("Errors:")
+    for name in names:
+        err = (sources[name] or {}).get("error")
+        if err:
+            print(f"  {name}: {err}")
+PY
+}
+
+usage() {
+  cat <<'EOF'
+skima — personal control plane for installing agent capabilities
+
+Usage:
+  skima check        Compare each Source's pinned revision to its remote HEAD
+                      (git ls-remote, no clone). Prints a table and writes
+                      .skima/status.json. Exits 1 only if every source is
+                      unreachable, or sources.json is missing.
+  skima sync [name...]
+                      Refresh Source tree(s) from remote HEAD: shallow clone,
+                      rsync into sources/<name>/ (excluding .git), update the
+                      pinned revision in sources.json, then re-check just
+                      those sources. With no names, syncs every Source. Never
+                      touches library/ — Adoption into the Library stays a
+                      deliberate, separate step.
+  skima status        Pretty-print .skima/status.json (run 'skima check'
+                      first if it doesn't exist yet).
+  skima install       Discover install targets and install all active Library
+                      capabilities (symlink first, copy fallback).
+  skima list          List active capabilities with their bucket.
+  skima targets       Show detected install targets.
+  skima root          Print the monorepo root.
+  skima help          Show this help.
+
+Env:
+  NO_COLOR              Disable colored output (also disabled when not a TTY).
+  SKIMA_NETWORK_TIMEOUT Seconds to wait per network call before treating a
+                         Source as unreachable (default: 10).
+EOF
+}
+
+main() {
+  local cmd="${1:-help}"
+  [ "$#" -gt 0 ] && shift
+  case "$cmd" in
+    check) cmd_check ;;
+    sync) cmd_sync "$@" ;;
+    status) cmd_status ;;
+    install) cmd_install ;;
+    list) cmd_list ;;
+    targets) cmd_targets ;;
+    root) cmd_root ;;
+    help|-h|--help) usage ;;
+    *)
+      echo "skima: unknown command '$cmd'" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

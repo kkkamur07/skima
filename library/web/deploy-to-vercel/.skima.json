@@ -1,0 +1,7 @@
+{
+  "id": "deploy-to-vercel",
+  "kind": "skill",
+  "bucket": "web",
+  "status": "active",
+  "provenance": null
+}

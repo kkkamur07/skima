@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Skima</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>Skima</h1>
+      <p class="tagline">Control plane for your agent capabilities</p>
+    </div>
+    <nav>
+      <a href="#/sources" data-route="sources">Sources</a>
+      <a href="#/library" data-route="library">Library</a>
+      <a href="#/updates" data-route="updates">Updates</a>
+    </nav>
+  </header>
+
+  <main id="app"><p class="hint">Loading…</p></main>
+
+  <footer>
+    <code>./cli/skima check</code>
+    <span aria-hidden="true">·</span>
+    <code>./cli/skima sync</code>
+    <span aria-hidden="true">·</span>
+    <code>./cli/skima install</code>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

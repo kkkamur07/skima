@@ -1,0 +1,39 @@
+{
+  "sources": {
+    "academic-research-skills": {
+      "url": "https://github.com/imbad0202/academic-research-skills",
+      "revision": "49e79a7c99296e431cecce60225bf8f5393f3fbb",
+      "path": "sources/academic-research-skills"
+    },
+    "agent-research-skills": {
+      "url": "https://github.com/lingzhi227/agent-research-skills",
+      "revision": "9e6c085d65e313e475e921fdfe795ac11eb7589e",
+      "path": "sources/agent-research-skills"
+    },
+    "agent-skills": {
+      "url": "https://github.com/addyosmani/agent-skills",
+      "revision": "d187883b7d761265309cdcc0f202cc76b4b3fb06",
+      "path": "sources/agent-skills"
+    },
+    "mattpocock-skills": {
+      "url": "https://github.com/mattpocock/skills",
+      "revision": "2bf70051928429983de3b5718d277150926f8c89",
+      "path": "sources/mattpocock-skills"
+    },
+    "supabase-agent-skills": {
+      "url": "https://github.com/supabase/agent-skills",
+      "revision": "1356046015476711a769601079262b5635929427",
+      "path": "sources/supabase-agent-skills"
+    },
+    "vercel-agent-skills": {
+      "url": "https://github.com/vercel-labs/agent-skills",
+      "revision": "f8a72b9603728bb92a217a879b7e62e43ad76c81",
+      "path": "sources/vercel-agent-skills"
+    },
+    "socratic-method-skill": {
+      "url": "https://github.com/malkreide/socratic-method-skill.git",
+      "revision": "7bf0d1d73d9e9b854c13b745fc87f4b0b66bb232",
+      "path": "sources/socratic-method-skill"
+    }
+  }
+}
