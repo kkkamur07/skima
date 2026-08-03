@@ -643,7 +643,16 @@ async function paintExplorePanel(panel, listBox) {
   const brings = bringsBlock(cap.components);
   if (brings) panel.appendChild(brings);
 
-  panel.appendChild(adoptBlock(cap, listBox));
+  // A container (a plugin holding whole Capabilities of its own) is not itself
+  // installable — agent-skills, for instance, has no root SKILL.md, so linking
+  // it into an Agent's skills directory would produce something unreadable.
+  // Adopt its parts instead; each becomes an ordinary Library copy.
+  const children = containerChildren(cap);
+  if (!cap.adopted && children.length) {
+    panel.appendChild(bulkAdoptBlock(cap, children, listBox));
+  } else {
+    panel.appendChild(adoptBlock(cap, listBox));
+  }
 
   const docNames = cap.docs || [];
   if (docNames.length) {
@@ -763,6 +772,173 @@ function adoptBlock(cap, listBox) {
       button.disabled = false;
       button.textContent = "Add to Library";
     }
+  });
+
+  box.appendChild(el("div", { class: "adopt-field" }, [el("label", {}, "Bucket"), select, newBucket]));
+  box.appendChild(button);
+  box.appendChild(noteHolder);
+  return box;
+}
+
+// Capabilities discovered *inside* another one. Discovery is outermost-wins,
+// so these are siblings in the flat per-Source list, related only by path.
+function containerChildren(cap) {
+  if (!exploreData) return [];
+  const source = exploreData.sources.find((s) => s.name === cap.source);
+  if (!source) return [];
+  const prefix = cap.path === "." ? "" : `${cap.path}/`;
+  // The per-Source list carries no `source` field — it is on the Source that
+  // owns the list — but /api/adopt needs one, so carry it down here.
+  return source.capabilities
+    .filter((c) => c.path !== cap.path && (prefix === "" ? c.path !== "." : c.path.startsWith(prefix)))
+    .map((c) => ({ ...c, source: source.name }));
+}
+
+// A part is adoptable if it is a Capability an Agent could actually load on its
+// own. Hook bundles are not: their commands resolve ${CLAUDE_PLUGIN_ROOT},
+// which only exists when the Agent itself installed the surrounding plugin.
+function partBlocker(child) {
+  if (child.kind === "hook") return "hooks resolve ${CLAUDE_PLUGIN_ROOT}, so they only work inside their plugin";
+  if (child.kind !== "skill" && child.kind !== "plugin") return `${child.kind} is not adoptable on its own`;
+  return null;
+}
+
+// Bulk adoption: take the parts of a plugin as ordinary Library copies, into
+// one Bucket. Buckets are directories, so re-sorting afterwards is a `mv` —
+// cheaper than making someone choose a Bucket for each part up front.
+function bulkAdoptBlock(cap, children, listBox) {
+  const box = el("div", { class: "adopt" });
+  const already = children.filter((c) => c.adopted);
+  const blocked = children.filter((c) => !c.adopted && partBlocker(c));
+  const available = children.filter((c) => !c.adopted && !partBlocker(c));
+
+  box.appendChild(el("h3", { class: "section-label" }, "Contains"));
+  box.appendChild(
+    el("p", { class: "hint" }, [
+      `${children.length} ${plural(children.length, "Capability", "Capabilities")} inside this one`,
+      already.length ? ` · ${already.length} already in your Library` : "",
+    ])
+  );
+
+  const boxes = new Map();
+  const list = el("ul", { class: "bulk-list" });
+
+  for (const child of available) {
+    const input = el("input", { type: "checkbox", checked: true });
+    boxes.set(child, input);
+    list.appendChild(
+      el("li", {}, [el("label", {}, [input, el("span", { class: "mono" }, child.id), kindBadge(child.kind)])])
+    );
+  }
+  for (const child of already) {
+    list.appendChild(
+      el("li", { class: "done" }, [
+        el("span", { class: "badge in-library" }, "In Library"),
+        el("span", { class: "mono" }, child.id),
+        el("span", { class: "hint" }, child.adopted.bucket),
+      ])
+    );
+  }
+  for (const child of blocked) {
+    list.appendChild(
+      el("li", { class: "done" }, [
+        kindBadge(child.kind),
+        el("span", { class: "mono" }, child.id),
+        el("span", { class: "hint" }, partBlocker(child)),
+      ])
+    );
+  }
+  box.appendChild(list);
+
+  if (!available.length) {
+    box.appendChild(
+      noteNode({
+        tone: "ok",
+        text: already.length
+          ? "Every part of this you can adopt is already in your Library."
+          : "Nothing here can be adopted on its own.",
+      })
+    );
+    return box;
+  }
+
+  const buckets = (exploreData && exploreData.buckets) || [];
+  const NEW_BUCKET = " new";
+  const select = el("select", { "aria-label": "Bucket" }, [
+    ...buckets.map((b) => el("option", { value: b }, b)),
+    el("option", { value: NEW_BUCKET }, "＋ New bucket…"),
+  ]);
+  const newBucket = el("input", { type: "text", placeholder: "bucket name", hidden: true, "aria-label": "New bucket name" });
+  select.addEventListener("change", () => {
+    newBucket.hidden = select.value !== NEW_BUCKET;
+    if (!newBucket.hidden) newBucket.focus();
+  });
+
+  const countLabel = () => {
+    const n = available.filter((c) => boxes.get(c).checked).length;
+    return n ? `Add ${n} to Library` : "Nothing selected";
+  };
+  const button = el("button", { class: "btn wide", type: "button" }, countLabel());
+  for (const input of boxes.values()) {
+    input.addEventListener("change", () => {
+      button.textContent = countLabel();
+      button.disabled = !available.some((c) => boxes.get(c).checked);
+    });
+  }
+
+  const noteHolder = el("div", {});
+
+  button.addEventListener("click", async () => {
+    const chosen = available.filter((c) => boxes.get(c).checked);
+    const bucket = select.value === NEW_BUCKET ? newBucket.value.trim() : select.value;
+    if (!bucket) {
+      noteHolder.innerHTML = "";
+      noteHolder.appendChild(noteNode({ tone: "bad", text: "Name a Bucket first." }));
+      return;
+    }
+    button.disabled = true;
+    noteHolder.innerHTML = "";
+    const progress = el("p", { class: "hint" }, "");
+    noteHolder.appendChild(progress);
+
+    // One request per part, in sequence. The server takes a single write lock
+    // for adopt and install, so overlapping them would just 409 each other.
+    const failures = [];
+    let done = 0;
+    for (const child of chosen) {
+      button.textContent = `Adding ${done + 1} of ${chosen.length}…`;
+      progress.textContent = child.id;
+      try {
+        const result = await postJSON("/api/adopt", {
+          source: child.source,
+          path: child.path,
+          bucket,
+          kind: child.kind,
+          id: child.id,
+        });
+        if (result.ok === false) failures.push(`${child.id}: ${result.error || "adopt failed"}`);
+        else done += 1;
+      } catch (e) {
+        failures.push(`${child.id}: ${e.message}`);
+      }
+      boxes.get(child).checked = false;
+    }
+
+    noteHolder.innerHTML = "";
+    if (done) {
+      noteHolder.appendChild(
+        noteNode({
+          tone: failures.length ? "warn" : "ok",
+          text: `${done} ${plural(done, "Capability", "Capabilities")} added to ${bucket}.`,
+          output: failures.length ? failures.join("\n") : undefined,
+          actions: installButton(),
+        })
+      );
+    } else {
+      noteHolder.appendChild(noteNode({ tone: "bad", text: "Nothing was added.", output: failures.join("\n") }));
+    }
+    button.textContent = "Done";
+    refreshExploreData(listBox);
   });
 
   box.appendChild(el("div", { class: "adopt-field" }, [el("label", {}, "Bucket"), select, newBucket]));

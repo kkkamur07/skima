@@ -19,15 +19,15 @@ Domain vocabulary lives in `CONTEXT.md`. Design decisions live in `docs/adr/`.
 
 ## Why is this valuable to me?
 
-If you use more than one agent, or more than one machine, ad hoc skill folders drift. You lose track of what is installed, copies diverge, and upstream updates overwrite local edits without warning.
+If you use more than one agent, or more than one machine, ad hoc skill folders drift. You lose track of what is installed, copies diverge quietly, and an upstream update can overwrite a local edit before you notice.
 
-Skima treats `library/` as the source of truth. Upstream stays pinned under `sources/`. You adopt what you want into a Bucket, edit those Library copies freely, and install only active entries. On a new machine you clone this repo and run install again.
+Skima treats `library/` as the source of truth, and upstream stays pinned under `sources/`. You adopt what you want into a Bucket, edit those Library copies freely, and install only the active ones. Clone the repo onto a new machine, run install again, and you are back to the same set.
 
-You also get a deliberate update path: `skima check` tells you which Sources moved, Change review shows what is behind, and Adoption never silently rewrites a Library copy.
+Updates stay deliberate rather than automatic. `skima check` tells you which Sources have moved, Change review shows what is behind, and adopting something never overwrites a Library copy you already have.
 
 ## How to use it?
 
-You need git and python3. The CLI is bash plus python3. The Web UI is Python stdlib. There is no `pip install` and no build step.
+You need git and python3. The CLI is bash calling python3, and the Web UI runs on the Python standard library, so there is no `pip install` and no build step.
 
 ### On a new machine
 
@@ -38,7 +38,7 @@ cd skima
 ./cli/skima install    # symlink (or copy) every active Capability into them
 ```
 
-Install looks for Cursor (`~/.cursor`), Claude Code (`~/.claude`), and the shared `~/.agents/skills` convention. Agents that are not installed are skipped. No directories are invented for missing Agents.
+Install looks for Cursor (`~/.cursor`), Claude Code (`~/.claude`), and the shared `~/.agents/skills` convention. If an Agent is not installed, Skima skips it and never creates a directory for it.
 
 ### Day to day
 
@@ -57,7 +57,7 @@ Local UI:
 python3 web/server.py          # http://127.0.0.1:4567
 ```
 
-The UI binds loopback only. Use it to browse Sources, Explore adoptable Capabilities, inspect the Library by Bucket, and run a check. Adoption and install from the UI call the same CLI commands.
+The server binds to loopback only. From there you can browse Sources, explore adoptable Capabilities, inspect the Library by Bucket, and run a check. Adopting or installing from the UI runs the same CLI commands.
 
 ### Layout notes
 
@@ -65,4 +65,4 @@ Capabilities live at `library/<bucket>/<id>/`, with a `.skima.json` record for K
 
 Deprecated Capabilities sit under `library/deprecated/` and are never installed.
 
-`sources.json` lists every tracked upstream URL and pinned revision. `.skima/` is local machine state from the last check and is gitignored. `backups/` is a local recovery snapshot and is also gitignored.
+`sources.json` lists every tracked upstream URL and its pinned revision. Two directories are local to the machine and gitignored: `.skima/`, which holds the result of the last check, and `backups/`, a local recovery snapshot.
