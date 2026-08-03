@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
-# Skima CLI — install active Library capabilities into detected coding agents.
+# Skima CLI — install active Library capabilities into detected Agents.
 # See CONTEXT.md at the monorepo root for the domain model this script follows.
+#
+# Exit codes:
+#   0  success
+#   1  operational failure (install failures, sync failures, all Sources unreachable)
+#   2  usage error (unknown command, missing sources.json)
+#   3  missing external dependency (python3, rsync, git)
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
@@ -9,6 +15,7 @@ set -euo pipefail
 
 # Resolve the monorepo root as the parent of this script's real directory,
 # following symlinks so `skima` still works if it's symlinked onto PATH.
+# Hand-rolled because BSD/macOS `readlink` has no -f.
 resolve_root() {
   local src="${BASH_SOURCE[0]}"
   while [ -h "$src" ]; do
@@ -31,9 +38,68 @@ SOURCES_JSON="$ROOT/sources.json"
 STATUS_DIR="$ROOT/.skima"
 STATUS_FILE="$STATUS_DIR/status.json"
 
-CURSOR_TARGET="$HOME/.cursor/skills"
-CLAUDE_TARGET="$HOME/.claude/skills"
-AGENTS_TARGET="$HOME/.agents/skills"
+# ---------------------------------------------------------------------------
+# Agents and Install targets
+#
+# CONTEXT.md: an Install target is an Agent Skima has DETECTED on the machine.
+# Detection is keyed off the Agent's own config directory — that directory
+# exists because the Agent is installed, so it is the honest signal. The
+# `skills/` subdirectory underneath it is Skima's to create on first Install
+# (CONTEXT.md: "created on first Install if missing").
+#
+# Skima never creates a config directory, and therefore never leaves a tree
+# behind for an Agent the user does not have installed.
+# ---------------------------------------------------------------------------
+
+# One row per known Agent: key<TAB>label<TAB>detect-path<TAB>skills-path.
+# Kept as a function (not an associative array) because macOS ships bash 3.2.
+agent_table() {
+  printf '%s\t%s\t%s\t%s\n' "cursor" "Cursor"      "$HOME/.cursor"        "$HOME/.cursor/skills"
+  printf '%s\t%s\t%s\t%s\n' "claude" "Claude Code" "$HOME/.claude"        "$HOME/.claude/skills"
+  # No single config dir identifies the shared ~/.agents convention, so the
+  # skills directory itself is the detection signal: Skima uses it when it is
+  # already there and never creates it.
+  printf '%s\t%s\t%s\t%s\n' "agents" "Shared agents dir" "$HOME/.agents/skills" "$HOME/.agents/skills"
+}
+
+# Every skills path Skima is ever allowed to write inside, detected or not.
+# Used by the destructive-operation guard below.
+TARGET_ROOTS=()
+while IFS=$'\t' read -r _k _l _d skills_path; do
+  [ -n "${skills_path:-}" ] && TARGET_ROOTS+=("$skills_path")
+done < <(agent_table)
+
+# Refuses any path that is not exactly "<known skills root>/<one component>".
+# Every rm/mv Skima performs inside a target goes through this first, so an
+# empty or unexpanded variable can never widen into a catastrophic path.
+guard_target_path() {
+  local p="${1:-}" root parent base
+  [ -n "$p" ] || return 1
+  case "$p" in
+    */) return 1 ;;
+    *"/../"*|*/..) return 1 ;;
+  esac
+  parent="${p%/*}"
+  base="${p##*/}"
+  [ -n "$parent" ] || return 1
+  [ -n "$base" ] || return 1
+  case "$base" in .|..) return 1 ;; esac
+  for root in ${TARGET_ROOTS[@]+"${TARGET_ROOTS[@]}"}; do
+    if [ "$parent" = "$root" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Guarded rm. Silently refuses anything guard_target_path rejects.
+discard_path() {
+  local p="${1:-}"
+  [ -n "$p" ] || return 0
+  guard_target_path "$p" || return 1
+  rm -rf -- "$p" 2>/dev/null || true
+  return 0
+}
 
 # ---------------------------------------------------------------------------
 # Output: color only when stdout is a TTY and NO_COLOR isn't set. Every
@@ -70,6 +136,26 @@ rel_path() {
   esac
 }
 
+tilde_path() {
+  local p="$1"
+  case "$p" in
+    "$HOME"/*) printf '%s\n' "~${p#"$HOME"}" ;;
+    *) printf '%s\n' "$p" ;;
+  esac
+}
+
+plural() {
+  if [ "$1" -eq 1 ]; then printf '%s' "$2"; else printf '%s' "$3"; fi
+}
+
+need_cmd() {
+  local c="$1"
+  if ! command -v "$c" >/dev/null 2>&1; then
+    echo "skima: '$c' is required but was not found on PATH" >&2
+    exit 3
+  fi
+}
+
 # Field separator for internal name/url/sha/status rows below. Deliberately
 # NOT a tab: bash's `read`/word-splitting treats tab as IFS whitespace and
 # collapses consecutive delimiters, which silently eats empty fields (e.g. a
@@ -79,69 +165,191 @@ FS=$'\x1f'
 
 # ---------------------------------------------------------------------------
 # Library discovery
+#
+# The DIRECTORY is authoritative for a Capability's Status, Id and Bucket:
+#
+#   library/<bucket>/<id>/              -> Status active
+#   library/deprecated/<bucket>/<id>/   -> Status deprecated
+#
+# Discovery is anchored at exactly that depth, so support material nested
+# inside a Capability (e.g. library/thinking/socratic-method/docs/de/SKILL.md)
+# is part of that Capability and never a Capability of its own.
+#
+# A disagreeing .skima.json is a validation warning, never an override — a
+# stale "status": "active" under library/deprecated/ can therefore not cause
+# an Install.
 # ---------------------------------------------------------------------------
 
-# Prints one line per active Capability: "<bucket>\t<id>\t<absolute-path>"
-#
-# A Capability is a directory directly under library/<bucket>/ (not
-# library/deprecated/) whose root contains SKILL.md or .skima.json. Nested
-# docs/support directories (e.g. library/thinking/socratic-method/docs) are
-# not treated as separate Capabilities.
-list_active_capabilities() {
-  local bucket_path bucket cap_path id
-  for bucket_path in "$LIBRARY_DIR"/*/; do
-    [ -d "$bucket_path" ] || continue
-    bucket="$(basename "$bucket_path")"
-    [ "$bucket" = "deprecated" ] && continue
-    for cap_path in "$bucket_path"*/; do
-      [ -d "$cap_path" ] || continue
-      id="$(basename "$cap_path")"
-      if [ -f "${cap_path}SKILL.md" ] || [ -f "${cap_path}.skima.json" ]; then
-        printf '%s\t%s\t%s\n' "$bucket" "$id" "$(cd "$cap_path" && pwd)"
+# True when a directory is the root of a Capability. .skima.json is the
+# primary marker; SKILL.md is accepted for Capabilities not yet given one.
+is_capability_dir() {
+  local d="$1"
+  [ -f "${d}.skima.json" ] || [ -f "${d}SKILL.md" ]
+}
+
+# Prints "<status>\t<bucket>\t<id>\t<absolute path>" for every Capability,
+# active and deprecated, sorted by bucket then id.
+list_capabilities() {
+  {
+    local bucket_path bucket cap_path id
+    for bucket_path in "$LIBRARY_DIR"/*/; do
+      [ -d "$bucket_path" ] || continue
+      bucket="$(basename "$bucket_path")"
+      if [ "$bucket" = "deprecated" ]; then
+        continue
       fi
+      for cap_path in "$bucket_path"*/; do
+        [ -d "$cap_path" ] || continue
+        is_capability_dir "$cap_path" || continue
+        id="$(basename "$cap_path")"
+        printf 'active\t%s\t%s\t%s\n' "$bucket" "$id" "$(cd "$cap_path" && pwd)"
+      done
     done
-  done
+
+    for bucket_path in "$LIBRARY_DIR"/deprecated/*/; do
+      [ -d "$bucket_path" ] || continue
+      bucket="$(basename "$bucket_path")"
+      for cap_path in "$bucket_path"*/; do
+        [ -d "$cap_path" ] || continue
+        is_capability_dir "$cap_path" || continue
+        id="$(basename "$cap_path")"
+        printf 'deprecated\t%s\t%s\t%s\n' "$bucket" "$id" "$(cd "$cap_path" && pwd)"
+      done
+    done
+  } | sort -t$'\t' -k2,2 -k3,3
+}
+
+# Prints "<bucket>\t<id>\t<absolute path>" for Status active only. This is the
+# exact set Install materializes (CONTEXT.md: Install includes every Capability
+# with Status active; deprecated Capabilities are never installed).
+list_active_capabilities() {
+  list_capabilities | awk -F'\t' '$1 == "active" { print $2 "\t" $3 "\t" $4 }'
+}
+
+# Prints one human-readable warning per line where a Capability's .skima.json
+# disagrees with the directory, is missing, or is unreadable. Never fails the
+# caller: metadata problems are reported, not enforced. Skipped entirely when
+# python3 is unavailable, since Install must keep working without it.
+library_warnings() {
+  command -v python3 >/dev/null 2>&1 || return 0
+  list_capabilities | python3 -c '
+import json, os, sys
+
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if not line:
+        continue
+    status, bucket, cap_id, path = line.split("\t", 3)
+    rel = os.path.join("library", "deprecated" if status == "deprecated" else "", bucket, cap_id)
+    rel = rel.replace("//", "/")
+    meta_path = os.path.join(path, ".skima.json")
+    if not os.path.isfile(meta_path):
+        print(f"{rel}: no .skima.json (Status/Id/Bucket taken from the directory)")
+        continue
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            meta = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"{rel}: .skima.json could not be read ({exc}); directory wins")
+        continue
+    if not isinstance(meta, dict):
+        print(f"{rel}: .skima.json is not a JSON object; directory wins")
+        continue
+    for field, actual in (("status", status), ("bucket", bucket), ("id", cap_id)):
+        declared = meta.get(field)
+        if declared is not None and declared != actual:
+            print(f"{rel}: .skima.json {field}=\"{declared}\" disagrees with the directory "
+                  f"({field}=\"{actual}\"); directory wins")
+' || true
+}
+
+print_library_warnings() {
+  local warnings w
+  warnings="$(library_warnings)"
+  [ -n "$warnings" ] || return 0
+  echo "${C_YELLOW}Library validation warnings${C_RESET} (directory is authoritative):"
+  while IFS= read -r w; do
+    [ -n "$w" ] && echo "  $w"
+  done <<< "$warnings"
+  echo
 }
 
 # ---------------------------------------------------------------------------
-# Install primitive: symlink first, copy fallback, staged for safety.
-# Sets global INSTALL_RESULT to one of: linked | copied | skipped | <error>.
+# Install primitive: symlink first, copy fallback, never a destructive gap.
+#
+# The replacement is fully materialized at a sibling temp path BEFORE anything
+# at the destination is touched. The destination is then moved aside with a
+# single atomic rename, the staged entry renamed into its place, and only then
+# is the old copy discarded. If the final rename fails the original is put
+# back. At no point does a window exist where the destination has been removed
+# and no replacement is ready.
+#
+# Sets INSTALL_RESULT to: linked | copied | skipped | <error message>.
 # ---------------------------------------------------------------------------
 
 INSTALL_RESULT=""
 
 install_one() {
   local dest="$1" src="$2"
+  INSTALL_RESULT=""
 
+  if ! guard_target_path "$dest"; then
+    INSTALL_RESULT="refused: '$dest' is not directly inside a known install target"
+    return 1
+  fi
+
+  # Already the symlink we want — leave it completely alone.
   if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$src" ]; then
     INSTALL_RESULT="skipped"
     return 0
   fi
 
   local tmp="${dest}.skima-tmp-$$"
-  rm -rf "$tmp" 2>/dev/null || true
+  discard_path "$tmp" || true
 
-  # Stage the symlink at a temp path, then atomically swap it in. This means
-  # we only ever remove the existing dest (symlink, plain dir, or file) once
-  # we already have a working replacement ready to move into place.
+  # 1. Materialize the replacement out of the way. Symlink first; copy only
+  #    when the symlink genuinely could not be created (ADR-0002).
+  local method=""
   if ln -s "$src" "$tmp" 2>/dev/null; then
-    if rm -rf "$dest" 2>/dev/null && mv "$tmp" "$dest" 2>/dev/null; then
-      INSTALL_RESULT="linked"
-      return 0
+    method="linked"
+  else
+    discard_path "$tmp" || true
+    if cp -R "$src" "$tmp" 2>/dev/null; then
+      method="copied"
+    else
+      discard_path "$tmp" || true
+      INSTALL_RESULT="could not stage a symlink or a copy"
+      return 1
     fi
   fi
-  rm -rf "$tmp" 2>/dev/null || true
 
-  # Symlink failed (e.g. filesystem doesn't support it) — fall back to copy.
-  if cp -R "$src" "$tmp" 2>/dev/null; then
-    if rm -rf "$dest" 2>/dev/null && mv "$tmp" "$dest" 2>/dev/null; then
-      INSTALL_RESULT="copied"
-      return 0
+  # 2. Move any existing entry aside (atomic rename, nothing destroyed yet).
+  local backup=""
+  if [ -e "$dest" ] || [ -L "$dest" ]; then
+    backup="${dest}.skima-old-$$"
+    discard_path "$backup" || true
+    if ! mv -- "$dest" "$backup" 2>/dev/null; then
+      discard_path "$tmp" || true
+      INSTALL_RESULT="could not move the existing entry aside"
+      return 1
     fi
   fi
-  rm -rf "$tmp" 2>/dev/null || true
 
-  INSTALL_RESULT="symlink and copy fallback both failed"
+  # 3. Swap the staged entry in (atomic rename).
+  if mv -- "$tmp" "$dest" 2>/dev/null; then
+    if [ -n "$backup" ]; then
+      discard_path "$backup" || true
+    fi
+    INSTALL_RESULT="$method"
+    return 0
+  fi
+
+  # 4. Swap failed — restore the original exactly as it was.
+  if [ -n "$backup" ]; then
+    mv -- "$backup" "$dest" 2>/dev/null || true
+  fi
+  discard_path "$tmp" || true
+  INSTALL_RESULT="could not swap the staged entry into place"
   return 1
 }
 
@@ -157,7 +365,7 @@ SKIMA_NETWORK_TIMEOUT="${SKIMA_NETWORK_TIMEOUT:-10}"
 with_timeout() {
   local secs="$1"; shift
   local out_file
-  out_file="$(mktemp)"
+  out_file="$(mktemp "${TMPDIR:-/tmp}/skima-timeout-XXXXXX")"
 
   ("$@" >"$out_file" 2>&1) &
   local pid=$!
@@ -180,11 +388,11 @@ with_timeout() {
     waited=$((waited + 1))
   done
 
-  wait "$pid"
-  local rc=$?
+  local rc=0
+  wait "$pid" || rc=$?
   cat "$out_file"
   rm -f "$out_file"
-  return $rc
+  return "$rc"
 }
 
 # Resolves the remote HEAD sha for a git URL, trying HEAD then common default
@@ -217,9 +425,10 @@ git_remote_head() {
 # ---------------------------------------------------------------------------
 
 ensure_sources_json_or_die() {
+  need_cmd python3
   if [ ! -f "$SOURCES_JSON" ]; then
     echo "skima: sources.json not found at $(rel_path "$SOURCES_JSON")" >&2
-    exit 1
+    exit 2
   fi
 }
 
@@ -299,9 +508,10 @@ colorize_status() {
 }
 
 print_check_table() {
-  printf '%b%-26s  %-12s  %-12s  %s%b\n' "$C_BOLD" "NAME" "PINNED" "REMOTE" "STATUS" "$C_RESET"
+  [ "${#CHECK_ROWS[@]}" -gt 0 ] || return 0
+  printf '%s%-26s  %-12s  %-12s  %s%s\n' "$C_BOLD" "NAME" "PINNED" "REMOTE" "STATUS" "$C_RESET"
   local row name url pinned remote status err pinned_short remote_short
-  for row in "${CHECK_ROWS[@]}"; do
+  for row in ${CHECK_ROWS[@]+"${CHECK_ROWS[@]}"}; do
     IFS="$FS" read -r name url pinned remote status err <<< "$row"
     pinned_short="${pinned:0:12}"
     remote_short="—"
@@ -313,14 +523,20 @@ print_check_table() {
 # Writes CHECK_ROWS to .skima/status.json. mode "full" replaces the whole
 # sources map (used by `check`); mode "merge" only updates the rows present
 # and preserves other existing entries (used by `sync` for the sources it
-# touched).
+# touched). Handles an empty CHECK_ROWS (bash 3.2 errors on "${arr[@]}" when
+# the array is empty under `set -u`).
 write_status_json() {
   local mode="${1:-full}"
   local rows_file
-  rows_file="$(mktemp)"
-  printf '%s\n' "${CHECK_ROWS[@]}" > "$rows_file"
+  rows_file="$(mktemp "${TMPDIR:-/tmp}/skima-rows-XXXXXX")"
+  if [ "${#CHECK_ROWS[@]}" -gt 0 ]; then
+    printf '%s\n' "${CHECK_ROWS[@]}" > "$rows_file"
+  else
+    : > "$rows_file"
+  fi
 
-  python3 - "$STATUS_FILE" "$mode" "$rows_file" <<'PY'
+  local rc=0
+  python3 - "$STATUS_FILE" "$mode" "$rows_file" <<'PY' || rc=$?
 import json
 import sys
 import datetime
@@ -362,9 +578,8 @@ with open(out_path, "w", encoding="utf-8") as f:
     json.dump(payload, f, indent=2)
     f.write("\n")
 PY
-  local rc=$?
   rm -f "$rows_file"
-  return $rc
+  return "$rc"
 }
 
 # Updates a single source's pinned revision in sources.json in place,
@@ -419,48 +634,134 @@ cmd_root() {
 }
 
 cmd_list() {
-  local count=0
+  print_library_warnings
+  local count=0 bucket id
   while IFS=$'\t' read -r bucket id _src; do
     [ -z "$id" ] && continue
     printf '  %-12s %s\n' "$bucket" "$id"
     count=$((count + 1))
-  done < <(list_active_capabilities | sort)
+  done < <(list_active_capabilities)
   echo
-  echo "$count active capabilities"
-}
+  echo "$count active $(plural "$count" capability capabilities)"
 
-print_target() {
-  local name="$1" path="$2" kind="$3"
-  if [ -d "$path" ]; then
-    printf '  %-8s %-34s %s\n' "$name" "$path" "$kind (exists)"
-  else
-    printf '  %-8s %-34s %s\n' "$name" "$path" "$kind (missing, created on install)"
+  local deprecated
+  deprecated="$(list_capabilities | awk -F'\t' '$1 == "deprecated"' | wc -l | tr -d ' ')"
+  if [ "$deprecated" -gt 0 ]; then
+    echo "$deprecated deprecated $(plural "$deprecated" capability capabilities) (never installed)"
   fi
 }
 
 cmd_targets() {
   echo "Install targets"
   echo
-  print_target "cursor" "$CURSOR_TARGET" "expected"
-  print_target "claude" "$CLAUDE_TARGET" "expected"
-  if [ -d "$AGENTS_TARGET" ]; then
-    print_target "agents" "$AGENTS_TARGET" "detected"
+  printf '%s%-20s  %-24s  %s%s\n' "$C_BOLD" "AGENT" "PATH" "DETECTION" "$C_RESET"
+
+  local _key label detect skills detected=0
+  while IFS=$'\t' read -r _key label detect skills; do
+    if [ -d "$detect" ]; then
+      detected=$((detected + 1))
+      if [ -d "$skills" ]; then
+        printf '%-20s  %-24s  %sdetected%s (%s exists)\n' \
+          "$label" "$(tilde_path "$skills")" "$C_GREEN" "$C_RESET" "$(tilde_path "$detect")"
+      else
+        printf '%-20s  %-24s  %sdetected%s (%s exists; skills dir created on first install)\n' \
+          "$label" "$(tilde_path "$skills")" "$C_GREEN" "$C_RESET" "$(tilde_path "$detect")"
+      fi
+    else
+      printf '%-20s  %-24s  %sskipped%s (%s not found — Agent not installed)\n' \
+        "$label" "$(tilde_path "$skills")" "$C_DIM" "$C_RESET" "$(tilde_path "$detect")"
+    fi
+  done < <(agent_table)
+
+  echo
+  if [ "$detected" -eq 0 ]; then
+    echo "No Agents detected. Skima will not create directories for Agents that are not installed."
   else
-    printf '  %-8s %-34s %s\n' "agents" "$AGENTS_TARGET" "not present (only used when detected)"
+    echo "$detected install $(plural "$detected" target targets) detected. Skipped Agents are never written to."
   fi
 }
 
+# Reports (and, where safe, cleans) entries at a target that no longer match an
+# active Capability.
+#
+#   * a symlink into this monorepo's library/ that is not an active Capability
+#     is something Skima itself created and is now stale (Capability deleted or
+#     deprecated) -> removed, so deprecated Capabilities never linger installed.
+#     Removing the link never touches the Library copy it points at.
+#   * anything else -> reported only, never touched. Skima cannot prove it
+#     created it, so it does not get to delete it. This includes copy-fallback
+#     entries, which are indistinguishable from a user's own directory.
+INSTALL_REMOVED_STALE=0
+INSTALL_FOREIGN=()
+
+scan_target_entries() {
+  local target="$1"; shift
+  local known_ids=("$@")
+
+  INSTALL_REMOVED_STALE=0
+  INSTALL_FOREIGN=()
+
+  local entry base known k link_target
+  for entry in "$target"/*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    base="$(basename "$entry")"
+
+    case "$base" in
+      *.skima-tmp-*)
+        # Staged replacement left behind by an interrupted install. It is
+        # either a fresh symlink or a copy of a Library copy — never user data.
+        discard_path "$entry" || true
+        continue
+        ;;
+      *.skima-old-*)
+        # A previous destination that an interrupted swap moved aside. This
+        # may be the only copy of that data, so report it and leave it alone.
+        INSTALL_FOREIGN+=("$base (interrupted install leftover — inspect, then remove by hand)")
+        continue
+        ;;
+    esac
+
+    known=0
+    for k in ${known_ids[@]+"${known_ids[@]}"}; do
+      if [ "$k" = "$base" ]; then
+        known=1
+        break
+      fi
+    done
+    [ "$known" -eq 1 ] && continue
+
+    if [ -L "$entry" ]; then
+      link_target="$(readlink "$entry")"
+      case "$link_target" in
+        "$LIBRARY_DIR"/*)
+          if discard_path "$entry"; then
+            INSTALL_REMOVED_STALE=$((INSTALL_REMOVED_STALE + 1))
+          fi
+          continue
+          ;;
+      esac
+    fi
+
+    INSTALL_FOREIGN+=("$base")
+  done
+}
+
 cmd_install() {
+  print_library_warnings
+
   local total_caps
   total_caps="$(list_active_capabilities | wc -l | tr -d ' ')"
 
-  local target_names=()
-  local target_paths=()
-  target_names+=("cursor"); target_paths+=("$CURSOR_TARGET")
-  target_names+=("claude"); target_paths+=("$CLAUDE_TARGET")
-  if [ -d "$AGENTS_TARGET" ]; then
-    target_names+=("agents"); target_paths+=("$AGENTS_TARGET")
-  fi
+  local target_labels=() target_paths=() skipped_labels=()
+  local _key label detect skills
+  while IFS=$'\t' read -r _key label detect skills; do
+    if [ -d "$detect" ]; then
+      target_labels+=("$label")
+      target_paths+=("$skills")
+    else
+      skipped_labels+=("$label ($(tilde_path "$detect") not found)")
+    fi
+  done < <(agent_table)
 
   echo "Skima install"
   echo "  monorepo root:       $ROOT"
@@ -468,15 +769,30 @@ cmd_install() {
   echo "  active capabilities: $total_caps"
   echo
 
+  if [ "${#skipped_labels[@]}" -gt 0 ]; then
+    local s
+    echo "Skipped (Agent not detected — nothing created):"
+    for s in "${skipped_labels[@]}"; do
+      echo "  $s"
+    done
+    echo
+  fi
+
+  if [ "${#target_paths[@]}" -eq 0 ]; then
+    echo "No install targets detected — nothing to do."
+    return 0
+  fi
+
   local overall_fail=0
   local idx
-  for idx in "${!target_names[@]}"; do
-    local name="${target_names[$idx]}"
+  for idx in "${!target_paths[@]}"; do
+    local name="${target_labels[$idx]}"
     local target="${target_paths[$idx]}"
 
+    # The Agent is detected; its skills subdirectory is ours to create.
     if ! mkdir -p "$target" 2>/dev/null; then
       echo "[$name] $target"
-      echo "  FAILED to create target directory"
+      echo "  FAILED to create the skills directory"
       echo
       overall_fail=1
       continue
@@ -485,11 +801,12 @@ cmd_install() {
     local linked=0 copied=0 skipped=0 fail=0
     local fail_msgs=()
     local known_ids=()
+    local bucket id src dest
 
     while IFS=$'\t' read -r bucket id src; do
       [ -z "$id" ] && continue
       known_ids+=("$id")
-      local dest="$target/$id"
+      dest="$target/$id"
       if install_one "$dest" "$src"; then
         case "$INSTALL_RESULT" in
           linked)  linked=$((linked + 1)) ;;
@@ -502,20 +819,7 @@ cmd_install() {
       fi
     done < <(list_active_capabilities)
 
-    # Read-only report of entries at the target that don't correspond to any
-    # active Capability. Never touched — Skima only manages known ids.
-    local orphans=()
-    local entry base known k
-    for entry in "$target"/*; do
-      [ -e "$entry" ] || continue
-      base="$(basename "$entry")"
-      case "$base" in *.skima-tmp-*) continue ;; esac
-      known=0
-      for k in "${known_ids[@]}"; do
-        [ "$k" = "$base" ] && known=1 && break
-      done
-      [ "$known" -eq 0 ] && orphans+=("$base")
-    done
+    scan_target_entries "$target" ${known_ids[@]+"${known_ids[@]}"}
 
     echo "[$name] $target"
     echo "  symlinked: $linked   copied: $copied   up-to-date: $skipped   failed: $fail"
@@ -526,8 +830,15 @@ cmd_install() {
         echo "    FAIL $m"
       done
     fi
-    if [ "${#orphans[@]}" -gt 0 ]; then
-      echo "  not managed by skima (present, no matching active capability): ${orphans[*]}"
+    if [ "$INSTALL_REMOVED_STALE" -gt 0 ]; then
+      echo "  removed $INSTALL_REMOVED_STALE stale skima $(plural "$INSTALL_REMOVED_STALE" symlink symlinks) (capability deleted or deprecated)"
+    fi
+    if [ "${#INSTALL_FOREIGN[@]}" -gt 0 ]; then
+      local f
+      echo "  not managed by skima (left untouched):"
+      for f in "${INSTALL_FOREIGN[@]}"; do
+        echo "    $f"
+      done
     fi
     echo
   done
@@ -539,16 +850,18 @@ cmd_install() {
 
 cmd_check() {
   ensure_sources_json_or_die
+  need_cmd git
   mkdir -p "$STATUS_DIR"
 
   if ! collect_check_rows; then
     echo "skima: failed to parse $(rel_path "$SOURCES_JSON") (is it valid JSON?)" >&2
-    exit 1
+    exit 2
   fi
 
   if [ "$CHECK_TOTAL" -eq 0 ]; then
     echo "No sources tracked in $(rel_path "$SOURCES_JSON")."
     write_status_json full
+    echo "Wrote $(rel_path "$STATUS_FILE")"
     return 0
   fi
 
@@ -594,18 +907,19 @@ sync_one() {
   fi
   echo "  remote HEAD: $sha"
 
-  local tmp_dir
+  local tmp_dir log_file
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/skima-sync-XXXXXX")"
+  log_file="$(mktemp "${TMPDIR:-/tmp}/skima-clone-XXXXXX")"
 
   echo "  cloning to temp dir..."
-  if ! with_timeout 120 git clone --quiet --depth 1 "$url" "$tmp_dir" >/tmp/skima-sync-clone.$$.log 2>&1; then
+  if ! with_timeout 120 git clone --quiet --depth 1 "$url" "$tmp_dir" >"$log_file" 2>&1; then
     echo "  FAILED: git clone failed"
-    sed 's/^/    /' /tmp/skima-sync-clone.$$.log 2>/dev/null || true
-    rm -f /tmp/skima-sync-clone.$$.log
+    sed 's/^/    /' "$log_file" 2>/dev/null || true
+    rm -f "$log_file"
     rm -rf "$tmp_dir"
     return 1
   fi
-  rm -f /tmp/skima-sync-clone.$$.log
+  rm -f "$log_file"
 
   local cloned_sha
   cloned_sha="$(git -C "$tmp_dir" rev-parse HEAD 2>/dev/null || true)"
@@ -633,13 +947,16 @@ sync_one() {
 
 cmd_sync() {
   ensure_sources_json_or_die
+  need_cmd git
+  need_cmd rsync
   mkdir -p "$STATUS_DIR"
 
   local all_names
   all_names="$(list_sources | cut -d "$FS" -f1)"
 
-  local -a targets=()
+  local targets=()
   if [ "$#" -eq 0 ]; then
+    local n
     while IFS= read -r n; do
       [ -n "$n" ] && targets+=("$n")
     done <<< "$all_names"
@@ -660,14 +977,14 @@ cmd_sync() {
 
   if [ "${#targets[@]}" -eq 0 ]; then
     echo "skima: no sources to sync" >&2
-    exit 1
+    exit 2
   fi
 
   echo "Skima sync"
   echo "  monorepo root: $ROOT"
   echo
 
-  local -a synced=() failed=()
+  local synced=() failed=()
   local name
   for name in "${targets[@]}"; do
     if sync_one "$name"; then
@@ -697,6 +1014,7 @@ cmd_sync() {
 }
 
 cmd_status() {
+  need_cmd python3
   if [ ! -f "$STATUS_FILE" ]; then
     echo "No status recorded yet — run 'skima check' first."
     return 0
@@ -756,23 +1074,26 @@ usage() {
 skima — personal control plane for installing agent capabilities
 
 Usage:
-  skima check        Compare each Source's pinned revision to its remote HEAD
+  skima check        Compare each Source's pinned Revision to its remote HEAD
                       (git ls-remote, no clone). Prints a table and writes
-                      .skima/status.json. Exits 1 only if every source is
-                      unreachable, or sources.json is missing.
+                      .skima/status.json. Exits 1 only when every Source is
+                      unreachable.
   skima sync [name...]
                       Refresh Source tree(s) from remote HEAD: shallow clone,
                       rsync into sources/<name>/ (excluding .git), update the
-                      pinned revision in sources.json, then re-check just
-                      those sources. With no names, syncs every Source. Never
-                      touches library/ — Adoption into the Library stays a
-                      deliberate, separate step.
+                      pinned Revision in sources.json, then re-check just
+                      those Sources and merge into .skima/status.json. With no
+                      names, refreshes every Source. Never touches library/ —
+                      Adoption into the Library stays a deliberate step.
   skima status        Pretty-print .skima/status.json (run 'skima check'
                       first if it doesn't exist yet).
-  skima install       Discover install targets and install all active Library
-                      capabilities (symlink first, copy fallback).
-  skima list          List active capabilities with their bucket.
-  skima targets       Show detected install targets.
+  skima install       Install every active Capability into each detected
+                      Install target (symlink first, copy fallback). Agents
+                      that are not detected are skipped; no directory is
+                      created for them.
+  skima list          List active Capabilities with their Bucket, plus any
+                      Library validation warnings.
+  skima targets       Show which Agents were detected and which were skipped.
   skima root          Print the monorepo root.
   skima help          Show this help.
 
@@ -780,12 +1101,17 @@ Env:
   NO_COLOR              Disable colored output (also disabled when not a TTY).
   SKIMA_NETWORK_TIMEOUT Seconds to wait per network call before treating a
                          Source as unreachable (default: 10).
+
+Exit codes:
+  0 success   1 operational failure   2 usage error   3 missing dependency
 EOF
 }
 
 main() {
   local cmd="${1:-help}"
-  [ "$#" -gt 0 ] && shift
+  if [ "$#" -gt 0 ]; then
+    shift
+  fi
   case "$cmd" in
     check) cmd_check ;;
     sync) cmd_sync "$@" ;;
@@ -798,7 +1124,7 @@ main() {
     *)
       echo "skima: unknown command '$cmd'" >&2
       usage >&2
-      exit 1
+      exit 2
       ;;
   esac
 }

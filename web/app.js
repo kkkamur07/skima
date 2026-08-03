@@ -1,5 +1,5 @@
 // Skima Web UI — vanilla JS, no build step, no dependencies.
-// Hash router with three views: Sources, Library, Updates.
+// Hash router with three views: Sources, Library, Change review.
 
 const app = document.getElementById("app");
 
@@ -12,14 +12,23 @@ const STATE_META = {
   unknown: { label: "Unknown", cls: "unknown" },
 };
 
-// Survives across re-renders of the Sources page so a Check result isn't
-// lost the moment the page redraws itself.
+// Survives across re-renders of a page so a check result isn't lost the
+// moment the page redraws itself.
 let lastCheckNote = null; // { text, isError, detail } | null
+
+// Generation counters. Every async render claims the next value and then
+// re-checks it before touching the DOM, so a slow response from an earlier
+// click can never overwrite what a later click already painted.
+let viewGen = 0;
+let detailGen = 0;
+let previewGen = 0;
 
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(attrs)) {
+    if (value == null) continue;
     if (key === "class") node.className = value;
+    else if (key === "text") node.textContent = value;
     else node.setAttribute(key, value);
   }
   for (const child of [].concat(children)) {
@@ -29,15 +38,20 @@ function el(tag, attrs = {}, children = []) {
   return node;
 }
 
+// The server rejects state-changing requests without a same-origin signal;
+// this header is the fallback proof for clients that send neither Origin nor
+// Fetch Metadata. Sending it on reads too costs nothing.
+const REQUEST_HEADERS = { "X-Skima-Request": "1" };
+
 async function getJSON(url) {
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: REQUEST_HEADERS });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `${url} -> ${res.status}`);
   return data;
 }
 
 async function postJSON(url) {
-  const res = await fetch(url, { method: "POST" });
+  const res = await fetch(url, { method: "POST", headers: REQUEST_HEADERS });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `${url} -> ${res.status}`);
   return data;
@@ -80,56 +94,67 @@ async function runCheck(onDone) {
   }
 }
 
+// "Run check" button + its result note, shared by Sources and Change review.
+function checkControls(checkedAt, rerender) {
+  const button = el("button", { class: "btn", type: "button" }, "Run check");
+  const note = el("span", { class: "hint check-note" });
+
+  if (lastCheckNote) {
+    note.textContent = lastCheckNote.text;
+    if (lastCheckNote.isError) note.classList.add("error");
+  } else {
+    note.textContent = formatCheckedAt(checkedAt);
+  }
+
+  button.addEventListener("click", () => {
+    button.disabled = true;
+    button.textContent = "Checking…";
+    runCheck(rerender);
+  });
+
+  const detail = lastCheckNote && lastCheckNote.detail
+    ? el("pre", { class: "check-detail" }, lastCheckNote.detail)
+    : null;
+
+  return { actions: el("div", { class: "toolbar-actions" }, [button, note]), detail };
+}
+
 async function renderSources() {
-  app.innerHTML = "<p class=\"hint\">Loading sources…</p>";
+  const gen = ++viewGen;
+  app.innerHTML = "<p class=\"hint\">Loading Sources…</p>";
+
   let sourcesData;
   let statusData;
   try {
     [sourcesData, statusData] = await Promise.all([getJSON("/api/sources"), getJSON("/api/status")]);
   } catch (e) {
+    if (gen !== viewGen) return;
     app.innerHTML = "";
-    app.appendChild(el("p", { class: "error" }, `Failed to load sources.json: ${e.message}`));
+    app.appendChild(el("p", { class: "error" }, `Failed to load Sources: ${e.message}`));
     return;
   }
+  if (gen !== viewGen) return;
 
   const sources = sourcesData.sources || {};
   const names = Object.keys(sources).sort();
   const statusSources = statusData.sources || {};
+  const controls = checkControls(statusData.checked_at, renderSources);
 
   app.innerHTML = "";
-
-  const checkBtn = el("button", { class: "btn", type: "button" }, "Check for updates");
-  const checkNote = el("span", { class: "hint check-note" });
-  const checkDetail = lastCheckNote && lastCheckNote.detail
-    ? el("pre", { class: "check-detail" }, lastCheckNote.detail)
-    : null;
-
-  if (lastCheckNote) {
-    checkNote.textContent = lastCheckNote.text;
-    if (lastCheckNote.isError) checkNote.classList.add("error");
-  } else {
-    checkNote.textContent = formatCheckedAt(statusData.checked_at);
-  }
-
-  checkBtn.addEventListener("click", () => {
-    checkBtn.disabled = true;
-    checkBtn.textContent = "Checking…";
-    runCheck(renderSources);
-  });
-
-  const toolbar = el("div", { class: "toolbar" }, [
-    el("div", {}, [
-      el("h2", {}, "Sources"),
-      el("p", { class: "hint" }, `${names.length} tracked \u00b7 feeds Updates`),
-    ]),
-    el("div", { class: "toolbar-actions" }, [checkBtn, checkNote]),
-  ]);
-
-  app.appendChild(toolbar);
-  if (checkDetail) app.appendChild(checkDetail);
+  app.appendChild(
+    el("div", { class: "toolbar" }, [
+      el("div", {}, [
+        el("h2", {}, "Sources"),
+        el("p", { class: "hint" }, `${names.length} tracked · feeds Change review`),
+      ]),
+      controls.actions,
+    ])
+  );
+  if (controls.detail) app.appendChild(controls.detail);
+  if (sourcesData.error) app.appendChild(el("p", { class: "error" }, sourcesData.error));
 
   if (names.length === 0) {
-    app.appendChild(el("p", {}, "No sources tracked yet."));
+    app.appendChild(el("p", {}, "No Sources tracked yet."));
     return;
   }
 
@@ -139,58 +164,82 @@ async function renderSources() {
     return el("tr", {}, [
       el("td", {}, el("a", { href: s.url || "#", target: "_blank", rel: "noopener" }, name)),
       el("td", {}, statusBadge(st.status || "unknown")),
-      el("td", { class: "mono" }, shortSha(s.revision)),
-      el("td", { class: "mono" }, shortSha(st.remote)),
+      el("td", { class: "mono", title: s.revision || "" }, shortSha(s.revision)),
+      el("td", { class: "mono", title: st.remote || "" }, shortSha(st.remote)),
       el("td", { class: "mono hint" }, s.path || "—"),
     ]);
   });
 
-  const table = el("table", { class: "list" }, [
-    el("thead", {}, el("tr", {}, [
-      el("th", {}, "Name"),
-      el("th", {}, "Status"),
-      el("th", {}, "Pinned"),
-      el("th", {}, "Remote"),
-      el("th", {}, "Path"),
-    ])),
-    el("tbody", {}, rows),
-  ]);
+  app.appendChild(
+    el("table", { class: "list" }, [
+      el("thead", {}, el("tr", {}, [
+        el("th", {}, "Name"),
+        el("th", {}, "Check state"),
+        el("th", {}, "Pinned"),
+        el("th", {}, "Remote"),
+        el("th", {}, "Path"),
+      ])),
+      el("tbody", {}, rows),
+    ])
+  );
+}
 
-  app.appendChild(table);
+function provenanceBlock(provenance) {
+  if (!provenance || typeof provenance !== "object") {
+    return el("p", { class: "hint" }, "Library-authored — no provenance.");
+  }
+  const source = provenance.source || provenance.name || null;
+  const url = provenance.url || provenance.repo || null;
+  const upstreamPath = provenance.path || provenance.upstream_path || null;
+  const revision = provenance.revision || provenance.rev || provenance.sha || null;
+
+  return el("dl", { class: "provenance" }, [
+    el("dt", {}, "Source"),
+    el("dd", {}, source || "—"),
+    el("dt", {}, "Repository"),
+    el("dd", {}, url ? el("a", { href: url, target: "_blank", rel: "noopener" }, url) : "—"),
+    el("dt", {}, "Upstream path"),
+    el("dd", { class: "mono" }, upstreamPath || "—"),
+    el("dt", {}, "Last-reviewed revision"),
+    el("dd", { class: "mono", title: revision || "" }, shortSha(revision)),
+  ]);
+}
+
+function warningsBlock(warnings) {
+  if (!warnings || !warnings.length) return null;
+  return el("div", { class: "warnings" }, [
+    el("h3", {}, warnings.length === 1 ? "1 metadata warning" : `${warnings.length} metadata warnings`),
+    el("ul", { class: "plain-list" }, warnings.map((w) => el("li", {}, w))),
+  ]);
 }
 
 async function renderCapabilityDetail(container, bucket, id, status) {
-  container.innerHTML = "<p>Loading…</p>";
+  const gen = ++detailGen;
+  container.innerHTML = "<p class=\"hint\">Loading…</p>";
   const qs = `bucket=${encodeURIComponent(bucket)}&id=${encodeURIComponent(id)}&status=${encodeURIComponent(status)}`;
 
   let meta;
   try {
     meta = await getJSON(`/api/capability?${qs}`);
   } catch (e) {
+    if (gen !== detailGen) return;
     container.innerHTML = "";
     container.appendChild(el("p", { class: "error" }, e.message));
     return;
   }
+  if (gen !== detailGen) return;
 
-  const provenanceBlock = meta.provenance
-    ? el("dl", {}, [
-        el("dt", {}, "Source"),
-        el("dd", {}, meta.provenance.source || "—"),
-        el("dt", {}, "Upstream URL"),
-        el("dd", {}, meta.provenance.url || "—"),
-        el("dt", {}, "Revision"),
-        el("dd", { class: "mono" }, shortSha(meta.provenance.revision)),
-      ])
-    : el("p", { class: "hint" }, "Library-authored — no provenance.");
-
-  const docNames = (meta.files || []).filter((name) => /\.md$/i.test(name) || name === "LICENSE");
+  // The server lists exactly the docs it will serve (any depth up to 3,
+  // escaping symlinks excluded), so every option here is loadable.
+  const docNames = meta.docs || [];
+  const initial = docNames.includes("SKILL.md") ? "SKILL.md" : docNames[0];
   const preview = el("pre", { class: "preview" }, docNames.length ? "Loading…" : "No previewable docs in this capability.");
-
   const docSelect = el(
     "select",
     {},
     docNames.map((name) => el("option", { value: name }, name))
   );
+  if (initial) docSelect.value = initial; // keep the control in sync with what loads
 
   container.innerHTML = "";
   container.appendChild(
@@ -198,9 +247,11 @@ async function renderCapabilityDetail(container, bucket, id, status) {
       el("h2", {}, meta.id),
       el("p", { class: "detail-meta" }, [
         el("span", { class: `badge ${meta.status}` }, meta.status),
-        ` \u00b7 ${meta.kind} \u00b7 ${meta.bucket}`,
+        ` · ${meta.kind} · ${meta.bucket}`,
       ]),
-      provenanceBlock,
+      warningsBlock(meta.warnings),
+      el("h3", { class: "section-label" }, "Provenance"),
+      provenanceBlock(meta.provenance),
       el("p", { class: "mono hint" }, meta.path),
       docNames.length
         ? el("div", { class: "files" }, [el("label", {}, "Preview: "), docSelect])
@@ -211,29 +262,38 @@ async function renderCapabilityDetail(container, bucket, id, status) {
 
   async function loadPreview(name) {
     if (!name) return;
+    const pgen = ++previewGen;
     preview.textContent = "Loading…";
     try {
       const fileRes = await getJSON(`/api/file?${qs}&name=${encodeURIComponent(name)}`);
-      preview.textContent = fileRes.content;
+      if (pgen !== previewGen || gen !== detailGen) return;
+      preview.textContent = fileRes.truncated
+        ? `${fileRes.content}\n\n… truncated (file is larger than the preview limit).`
+        : fileRes.content;
     } catch (e) {
+      if (pgen !== previewGen || gen !== detailGen) return;
       preview.textContent = `Failed to load ${name}: ${e.message}`;
     }
   }
 
   docSelect.addEventListener("change", (e) => loadPreview(e.target.value));
-  if (docNames.length) loadPreview(docNames.includes("SKILL.md") ? "SKILL.md" : docNames[0]);
+  if (initial) loadPreview(initial);
 }
 
 async function renderLibrary() {
-  app.innerHTML = "<p class=\"hint\">Loading library…</p>";
+  const gen = ++viewGen;
+  app.innerHTML = "<p class=\"hint\">Loading Library…</p>";
+
   let data;
   try {
     data = await getJSON("/api/buckets");
   } catch (e) {
+    if (gen !== viewGen) return;
     app.innerHTML = "";
-    app.appendChild(el("p", { class: "error" }, `Failed to load library: ${e.message}`));
+    app.appendChild(el("p", { class: "error" }, `Failed to load Library: ${e.message}`));
     return;
   }
+  if (gen !== viewGen) return;
 
   const buckets = data.buckets || {};
   const bucketNames = Object.keys(buckets).sort();
@@ -244,7 +304,7 @@ async function renderLibrary() {
     el("div", { class: "toolbar" }, [
       el("div", {}, [
         el("h2", {}, "Library"),
-        el("p", { class: "hint" }, `${totalCaps} capabilities \u00b7 ${bucketNames.length} buckets`),
+        el("p", { class: "hint" }, `${totalCaps} capabilities · ${bucketNames.length} buckets`),
       ]),
     ])
   );
@@ -265,18 +325,29 @@ async function renderLibrary() {
             "data-id": cap.id,
             "data-status": cap.status,
           },
-          [cap.id, el("span", { class: `badge ${cap.status}` }, cap.status)]
+          [
+            cap.id,
+            el("span", { class: "cap-marks" }, [
+              cap.warnings && cap.warnings.length
+                ? el("span", { class: "warn-mark", title: cap.warnings.join("\n") }, "!")
+                : null,
+              el("span", { class: `badge ${cap.status}` }, cap.status),
+            ]),
+          ]
         )
       )
     );
-    list.appendChild(el("div", { class: "bucket" }, [el("h3", {}, `${bucket} (${caps.length})`), el("ul", {}, items)]));
+    const body = caps.length
+      ? el("ul", {}, items)
+      : el("p", { class: "hint empty-bucket" }, "No capabilities yet.");
+    list.appendChild(el("div", { class: "bucket" }, [el("h3", {}, `${bucket} (${caps.length})`), body]));
   }
 
   const detail = el("div", { class: "detail" }, el("p", { class: "hint" }, "Select a capability to view details."));
 
   app.appendChild(
     el("section", { class: "library" }, [
-      bucketNames.length ? list : el("p", {}, "No capabilities in the library yet."),
+      bucketNames.length ? list : el("p", {}, "No buckets in the Library yet."),
       detail,
     ])
   );
@@ -291,68 +362,92 @@ async function renderLibrary() {
   });
 }
 
-async function renderUpdates() {
-  app.innerHTML = "<p class=\"hint\">Loading updates…</p>";
+// Scope note shown on every Change review render. This page compares pinned
+// Revisions to remote HEADs and nothing more; saying so beats implying a
+// depth the page does not have.
+function reviewScopeNote() {
+  return el("div", { class: "scope-note" }, [
+    el("p", {}, [
+      "Shows: each tracked Source's pinned Revision against its remote HEAD, as recorded by the last ",
+      el("code", {}, "skima check"),
+      ".",
+    ]),
+    el("p", {}, [
+      "Not yet shown: the file-level changes behind a Source that is behind, and whether an adopted ",
+      "Library copy has drifted from its provenance Revision. Adoption and updates stay CLI actions — ",
+      "there is no adopt or update button here.",
+    ]),
+  ]);
+}
+
+async function renderChangeReview() {
+  const gen = ++viewGen;
+  app.innerHTML = "<p class=\"hint\">Loading Change review…</p>";
+
   let sourcesData;
   let statusData;
   try {
     [sourcesData, statusData] = await Promise.all([getJSON("/api/sources"), getJSON("/api/status")]);
   } catch (e) {
+    if (gen !== viewGen) return;
     app.innerHTML = "";
-    app.appendChild(el("p", { class: "error" }, `Failed to load status: ${e.message}`));
+    app.appendChild(el("p", { class: "error" }, `Failed to load check status: ${e.message}`));
     return;
   }
+  if (gen !== viewGen) return;
 
   const sources = sourcesData.sources || {};
   const statusSources = statusData.sources || {};
   const names = Object.keys(sources).sort();
+  const controls = checkControls(statusData.checked_at, renderChangeReview);
 
   app.innerHTML = "";
   app.appendChild(
     el("div", { class: "toolbar" }, [
       el("div", {}, [
-        el("h2", {}, "Updates"),
+        el("h2", {}, "Change review"),
         el("p", { class: "hint" }, formatCheckedAt(statusData.checked_at)),
       ]),
+      controls.actions,
     ])
   );
+  if (controls.detail) app.appendChild(controls.detail);
+  app.appendChild(reviewScopeNote());
 
   if (!statusData.checked_at) {
     app.appendChild(
       el("div", { class: "empty-state" }, [
         el("p", {}, statusData.message || "Run skima check to see which Sources are behind."),
-        el("p", { class: "hint" }, "Then revisit this page, or use \u201cCheck for updates\u201d on Sources."),
+        el("p", { class: "hint" }, "Use “Run check” above, or run ./cli/skima check in a terminal."),
       ])
     );
     return;
   }
 
   const behindNames = names.filter((name) => (statusSources[name] || {}).status === "behind");
-  const flaggedNames = names.filter((name) => {
-    const status = (statusSources[name] || {}).status;
-    return status && status !== "behind" && status !== "up-to-date";
-  });
+  const upToDateNames = names.filter((name) => (statusSources[name] || {}).status === "up-to-date");
+  const flaggedNames = names.filter((name) => !behindNames.includes(name) && !upToDateNames.includes(name));
 
   if (behindNames.length === 0) {
-    app.appendChild(el("div", { class: "empty-state" }, [el("p", {}, "All Sources are up to date.")]));
+    app.appendChild(el("div", { class: "empty-state" }, [el("p", {}, "No tracked Source is behind its remote.")]));
   } else {
     const items = behindNames.map((name) => {
       const s = sources[name] || {};
       const st = statusSources[name] || {};
-      return el("li", { class: "update-item" }, [
-        el("div", { class: "update-item-head" }, [
-          el("span", { class: "update-name" }, name),
+      return el("li", { class: "review-item" }, [
+        el("div", { class: "review-item-head" }, [
+          el("span", { class: "review-name" }, name),
           statusBadge("behind"),
         ]),
-        el("p", { class: "mono hint" }, `pinned ${shortSha(s.revision)} \u2192 remote ${shortSha(st.remote)}`),
+        el("p", { class: "mono hint" }, `pinned ${shortSha(st.pinned || s.revision)} → remote ${shortSha(st.remote)}`),
         el("p", { class: "cta" }, [
           "Run ",
-          el("code", {}, `cli/skima sync ${name}`),
-          " in the CLI, then review Library copies.",
+          el("code", {}, `./cli/skima sync ${name}`),
+          " to move the pinned Revision, then adopt or update Library copies deliberately.",
         ]),
       ]);
     });
-    app.appendChild(el("ul", { class: "update-list" }, items));
+    app.appendChild(el("ul", { class: "review-list" }, items));
   }
 
   if (flaggedNames.length) {
@@ -361,18 +456,23 @@ async function renderUpdates() {
       return el("li", {}, [
         name,
         " ",
-        statusBadge(st.status),
-        st.error ? el("span", { class: "hint" }, ` \u2014 ${st.error}`) : null,
+        statusBadge(st.status || "unknown"),
+        st.error ? el("span", { class: "hint" }, ` — ${st.error}`) : null,
       ]);
     });
     app.appendChild(
-      el("div", { class: "update-other" }, [el("h3", {}, "Needs attention"), el("ul", { class: "plain-list" }, items)])
+      el("div", { class: "review-other" }, [el("h3", {}, "Needs attention"), el("ul", { class: "plain-list" }, items)])
     );
   }
+
+  app.appendChild(
+    el("p", { class: "hint review-summary" }, `${upToDateNames.length} of ${names.length} tracked Sources up to date.`)
+  );
 }
 
-const routes = { sources: renderSources, library: renderLibrary, updates: renderUpdates };
-const ROUTE_ALIASES = { review: "updates" };
+const routes = { sources: renderSources, library: renderLibrary, review: renderChangeReview };
+// "updates" was the old name for this page; keep old links working.
+const ROUTE_ALIASES = { updates: "review" };
 
 function route() {
   let hash = location.hash.replace(/^#\/?/, "") || "sources";
