@@ -187,6 +187,11 @@ def kv_rows(console, color, pairs):
 
 
 def warnings_block(console, color, warnings):
+    """Warnings wrap often, so they are padded rather than prefixed — a wrapped
+    second line then keeps the same indent instead of falling back to column 0."""
+    from rich.padding import Padding
+    from rich.text import Text
+
     if not warnings:
         return
     section(
@@ -196,7 +201,7 @@ def warnings_block(console, color, warnings):
         "the directory is authoritative",
     )
     for text in warnings:
-        note(console, color, "  " + text, style="yellow")
+        console.print(Padding(Text(text, style="yellow" if color else "none"), (0, 0, 0, 2)))
     console.print()
 
 

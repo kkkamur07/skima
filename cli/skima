@@ -344,6 +344,7 @@ install_one() {
     return 0
   fi
 
+
   local tmp="${dest}.skima-tmp-$$"
   discard_path "$tmp" || true
 
@@ -354,6 +355,17 @@ install_one() {
     method="linked"
   else
     discard_path "$tmp" || true
+    # Symlinks are unavailable here, so this Capability lives as a copy
+    # (ADR-0002). A copy is a directory, not the symlink tested above, so
+    # without this check it would be re-copied on every single install. If the
+    # content already matches, there is nothing to do. Any difference at all —
+    # including a file the Agent added — falls through and is replaced, which
+    # is the safe direction to err in.
+    if [ ! -L "$dest" ] && [ -d "$dest" ] && [ -d "$src" ] \
+       && diff -rq "$src" "$dest" >/dev/null 2>&1; then
+      INSTALL_RESULT="skipped"
+      return 0
+    fi
     if cp -R "$src" "$tmp" 2>/dev/null; then
       method="copied"
     else

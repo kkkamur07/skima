@@ -29,10 +29,14 @@ entry in `sources.json` and compares the result to the pinned `revision`. No clo
 correctness.
 
 ```
-NAME                        PINNED        REMOTE        STATUS
-academic-research-skills    49e79a7c9929  49e79a7c9929  up-to-date
-agent-skills                d187883b7d76  bdf76c7c6b7b  behind
-mattpocock-skills           2bf700519284  2ab958093e83  behind
+Check — pinned Revision vs remote HEAD
+
+SOURCE                    PINNED        REMOTE        STATUS
+academic-research-skills  49e79a7c9929  49e79a7c9929  up-to-date
+agent-skills              d187883b7d76  bdf76c7c6b7b  behind
+mattpocock-skills         2bf700519284  2ab958093e83  behind
+
+3 Sources   1 up-to-date   2 behind
 
 Wrote .skima/status.json
 ```
@@ -110,10 +114,14 @@ creates an Agent's configuration directory, so an Agent you do not have installe
 symlinks on your machine. `cli/skima targets` shows exactly what was detected and why anything was skipped:
 
 ```
-AGENT                 PATH                      DETECTION
-Cursor                ~/.cursor/skills          detected (~/.cursor exists)
-Claude Code           ~/.claude/skills          detected (~/.claude exists)
-Shared agents dir     ~/.agents/skills          skipped (~/.agents/skills not found — Agent not installed)
+Install targets — Agents detected on this machine
+
+AGENT              INSTALLS INTO     DETECTION
+Cursor             ~/.cursor/skills  detected (~/.cursor exists)
+Claude Code        ~/.claude/skills  detected (~/.claude exists)
+Shared agents dir  ~/.agents/skills  skipped (~/.agents/skills not found — Agent not installed)
+
+2 install targets detected   skipped Agents are never written to
 ```
 
 ### Symlink first, copy as fallback
@@ -161,6 +169,20 @@ At each target, `install` reports what it found that does not match an active Ca
 Color is used when stdout is a TTY and `NO_COLOR` is unset. Every command stays fully readable without it;
 piped output, `NO_COLOR=1` and `TERM=dumb` all turn it off automatically.
 
+Tables, section rules and status glyphs come from `cli/render.py`, which uses the `rich` package if it
+happens to be importable. It is a presentation layer and nothing more:
+
+- **`rich` is never required.** Skima runs from a fresh clone with nothing installed. If the import fails —
+  or the render fails for any other reason — `render.py` exits `97` having written nothing, and `cli/skima`
+  prints the plain output it has always printed. Nothing is auto-installed, no import error is shown, and
+  no exit code changes.
+- **Piped output is plain either way.** `cli/skima` passes its own TTY decision down as `SKIMA_COLOR`, and
+  `render.py` pins the Console to no color system, no box drawing and a fixed 100-column width when that
+  says "not a terminal" — rich's own detection is never consulted. This is what keeps `web/server.py`'s
+  captured stdout readable inside a browser `<pre>`.
+- **`python3` stays optional where it already was.** `install`, `list`, `targets`, `root` and `help` all
+  fall back to plain output when `python3` is missing, exactly as before.
+
 ## Environment
 
 | Variable | Effect |
@@ -173,3 +195,6 @@ piped output, `NO_COLOR=1` and `TERM=dumb` all turn it off automatically.
 Bash 3.2 or newer (the version macOS ships), plus `git` for `check`/`sync`, `rsync` for `sync`, and
 `python3` for JSON handling in `check`/`sync`/`status` and for Library validation warnings. `install` works
 without `python3`; it only loses the validation warnings.
+
+The `rich` package is optional and is not declared as a dependency anywhere. Install it into whatever
+Python `python3` resolves to if you want the pretty tables; skip it and everything still works.
