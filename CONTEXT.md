@@ -45,7 +45,7 @@ An evolving, user-defined primary home for a **Capability**, grouped by domain o
 _Avoid_: category, folder (too generic), tag (tags are cross-cutting, not the primary home)
 
 **Status**:
-The lifecycle of a **Capability**: `active` or `deprecated`. Active entries live under `library/<bucket>/`; deprecated entries live under `library/deprecated/<bucket>/`.
+The lifecycle of a **Capability**: `active` or `deprecated`. Active entries live under `library/<bucket>/`; deprecated entries live under `library/deprecated/<bucket>/`. Location on disk is authoritative: a **Capability record** that disagrees with its directory is a validation error, never an override.
 _Avoid_: state, maturity, in-progress (not a Status value for v1)
 
 **Capability**:
@@ -69,12 +69,20 @@ The editable files of an adopted **Capability** owned inside the **Library**. **
 _Avoid_: fork (ambiguous with git forks), vendor (implementation slang), pin (pins are for **Revision** provenance only)
 
 **Id**:
-The stable name of a **Capability** in the **Library** and on **Install targets**. For **Capabilities** adopted from a **Source**, **Id** matches the upstream identity (e.g. `socratic-method`). For Library-authored **Capabilities**, the user chooses the **Id**.
+The stable name of a **Capability** in the **Library** and on **Install targets**. For **Capabilities** adopted from a **Source**, **Id** matches the upstream identity (e.g. `socratic-method`). For Library-authored **Capabilities**, the user chooses the **Id**. The directory name carries the **Id**; the **Capability record** must agree with it. A `name` in the capability's own frontmatter is upstream display text, not the **Id** — where upstream ships a divergent one (e.g. `vercel-react-best-practices` under `react-best-practices/`), **Id** fidelity to the upstream *directory* wins and the frontmatter is left untouched.
 _Avoid_: slug, key, folder name (folder layout may follow **Id** but is not the concept)
 
 **Provenance**:
-The link from an adopted **Capability** to its **Source** (repo, upstream path, last-reviewed **Revision**). Used by **Change review** to match updates.
+The link from an adopted **Capability** to its **Source** (repo, upstream path, last-reviewed **Revision**). Used by **Change review** to match updates. A Library-authored **Capability** has no **Provenance**; that absence is recorded explicitly (`null`), not left implicit.
 _Avoid_: origin, remote metadata
+
+**Capability record**:
+The per-**Capability** metadata file at `library/<bucket>/<id>/.skima.json`. It is where **Id**, **Kind**, **Bucket**, **Status**, and **Provenance** are written down — the four facts every **Capability** must have plus its **Source** link. Its presence also marks a directory as a **Capability**, so discovery never has to guess from file globs (which would otherwise mistake a nested translation such as `docs/de/SKILL.md` for a second **Capability**). Where the record and the directory layout disagree about **Id**, **Bucket**, or **Status**, the directory wins and the mismatch is reported.
+_Avoid_: manifest (upstream capabilities ship their own), frontmatter (that is upstream's, not Skima's), sidecar
+
+**Source status**:
+The freshness of a tracked **Source** as of the last check: `up-to-date`, `behind`, or `unreachable` — its pinned **Revision** compared against the upstream head. Written to `.skima/status.json`, which is derived, per-machine, and not source of truth. It is the input that tells **Change review** which **Sources** are worth reviewing; it is not itself the review.
+_Avoid_: sync state, health (too broad), drift
 
 **Source list**:
 The inventory of **Sources** **Skima** is tracking — visible in the **Web UI** so the user can see exactly which repositories feed **Change review**.
@@ -100,8 +108,10 @@ _Avoid_: deploy, publish, sync (sync is for Sources)
 - **Skima** discovers zero or more **Agents** and treats each as an **Install target**
 - Cursor and Claude Code are expected **Install targets**; other **Agents** are included only when detected
 - Cursor global skills path: `~/.cursor/skills`. Claude Code global skills path: `~/.claude/skills` (created on first **Install** if missing)
-- Day-1 seed: `repos/` → `sources/`; curated set from `skills-use/` → `library/` by **Bucket**; `~/.cursor/skills` is reconciled by **Install** (not a second Library)
+- Day-1 seed (done, 2026-08-03): the former `repos/` seeded `sources/` and the former `skills-use/` seeded `library/` by **Bucket**; both original trees now live only under `backups/`, and `~/.cursor/skills` is reconciled by **Install** (it was never a second Library)
 - Every **Capability** has exactly one **Id**, belongs to exactly one **Bucket**, has exactly one **Status**, and has exactly one **Kind**
+- Every **Capability** has exactly one **Capability record**, which is where those four facts and its **Provenance** are written; the directory layout is authoritative wherever the two disagree
+- **Source status** is refreshed by the **CLI** against each **Source**'s pinned **Revision** and tells **Change review** which **Sources** are behind; it is derived state, so it is never committed
 - A **Library** contains many **Capabilities** and many evolving **Buckets**
 - **Skima** tracks zero or more **Sources** (shown in the **Source list**); sync refreshes committed trees under `sources/` to a newer **Revision**
 - A **Capability** may originate from a **Source** (via **Adoption**) or be authored directly in the **Library**
