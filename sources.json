@@ -12,22 +12,22 @@
     },
     "agent-skills": {
       "url": "https://github.com/addyosmani/agent-skills",
-      "revision": "d187883b7d761265309cdcc0f202cc76b4b3fb06",
+      "revision": "bdf76c7c6b7b3b3e01bb15c9fdc42ac5351855c1",
       "path": "sources/agent-skills"
     },
     "mattpocock-skills": {
       "url": "https://github.com/mattpocock/skills",
-      "revision": "2bf70051928429983de3b5718d277150926f8c89",
+      "revision": "2ab958093e83e0ec752e6c1c5932da465bf23e0c",
       "path": "sources/mattpocock-skills"
     },
     "supabase-agent-skills": {
       "url": "https://github.com/supabase/agent-skills",
-      "revision": "1356046015476711a769601079262b5635929427",
+      "revision": "1207767388a0ffb55f21fb4e6988fee96942431d",
       "path": "sources/supabase-agent-skills"
     },
     "vercel-agent-skills": {
       "url": "https://github.com/vercel-labs/agent-skills",
-      "revision": "f8a72b9603728bb92a217a879b7e62e43ad76c81",
+      "revision": "7c180d9044c9ae2b442b567aad4e42a28dd5ed62",
       "path": "sources/vercel-agent-skills"
     },
     "socratic-method-skill": {

@@ -31,9 +31,16 @@ Findings from a conformance audit against `CONTEXT.md`, and what was done.
 - [x] **`engineering` Bucket split** into architecture, ops, planning, quality, review and security; it had grown into a catch-all holding 17 of 33 Capabilities.
 - [x] **Agent directories reconciled.** Running install against the real machine surfaced three entries Skima did not manage. `teach` and `diagnose` were byte-identical to tracked upstream and were adopted into the Library; `socratic-thinking` (an older copy of socratic-method under the wrong Id) and a loose top-level `SKILL.md` were stale duplicates and were removed from `~/.cursor/skills`, archived first at `backups/20260803-144647/unmanaged-cursor-skills/`. All three targets are now 100% Skima-managed: 35 symlinks each, no foreign entries, no broken links.
 
+## Explore and adopt-from-UI (2026-08-03)
+
+- [x] **`skima adopt` added** — `skima adopt <source> [upstream-path] --bucket <bucket> [--kind <kind>] [--id <id>]`. Never guesses a Bucket, takes the Id from the upstream directory (ADR-0006), infers Kind from the tree, refuses an Id already in the Library, and stages the copy in a hidden temp directory before renaming it into place so an interrupted adopt cannot leave a half-populated Capability for Install to push out.
+- [x] **Explore page in the Web UI.** Browses each Source tree, recognises Capabilities by shape (`SKILL.md`, `.claude-plugin/plugin.json`, `hooks/hooks.json`, outermost match wins), previews their docs, and offers "Add to Library". Marks what is already a Library copy — matched on Provenance, falling back to Id — and flags when that copy's Revision trails the Source pin.
+- [x] **Adoption reachable from both surfaces, implemented once.** `POST /api/adopt` and `POST /api/install` shell out to `cli/skima`; the server's own validation exists for the error message and the CLI re-checks all of it. ADR-0010 records the decision, ADR-0011 the discovery-by-shape rule.
+
 ## Open
 
-- [ ] **Change review is freshness-only.** It shows per-Source pinned-vs-remote Revision from the last check — real data, but not yet "what changed". No file-level diff, no Library-copy drift against the provenance Revision, and no adopt/update actions; those remain CLI work. This is the largest remaining gap against the `CONTEXT.md` definition.
+- [ ] **Change review is still freshness-only.** It shows per-Source pinned-vs-remote Revision from the last check — real data, but not yet "what changed". There is no file-level diff of what moved in a Source, and no Library-copy drift shown against the provenance Revision. Adoption now reaches the Web UI via Explore; the review half did not. This is the largest remaining gap against the `CONTEXT.md` definition.
+- [ ] **No way to update an already-adopted Library copy** from either surface. `skima adopt` refuses an Id that is already in the Library, and nothing offers "take upstream's newer version" — Explore only flags that the copy's Revision trails the Source pin. Acting on that today means editing the files by hand. It is blocked on the diff above: an update with no diff behind it is the silent overwrite Adoption exists to prevent.
 - [ ] **`deep-research` is a divergent, stale ancestor** of the `academic-research-skills` copy (6-phase single skill vs upstream's 13-agent pipeline). Adopted as-is with provenance recorded; decide whether to accept upstream, keep the local version, or merge.
 - [ ] **`improve-codebase-architecture` is deliberately divergent** (upstream's HTML-report step stripped). Provenance now records the baseline, so this is a Change review decision rather than an invisible edit.
 - [ ] **No Codex Install target.** `CONTEXT.md` names Codex as an example Agent but defines no skills path for it. Not invented; a one-line addition to the CLI's agent table once the path is known.
@@ -50,4 +57,4 @@ Findings from a conformance audit against `CONTEXT.md`, and what was done.
 - [ ] Cross-cutting tags (if still wanted after Buckets prove enough)
 - [ ] Selected / profile-based Install sets (v1 = all active only)
 - [ ] Optional launchd/cron wrapper that only runs `skima check` (not required for correctness)
-- [ ] Full Change review diffs + adopt-from-UI (v1: Change review lists behind Sources; sync stays CLI)
+- [ ] Full Change review diffs — file-level "what changed" in a Source since its pin, plus Library-copy drift against the provenance Revision, and an update action on the back of them. Adopt-from-UI shipped on 2026-08-03 (Explore); the diffs did not, and sync stays CLI-only.

@@ -33,6 +33,7 @@ resolve_root() {
 }
 
 ROOT="$(resolve_root)"
+RENDER_PY="$ROOT/cli/render.py"
 LIBRARY_DIR="$ROOT/library"
 SOURCES_JSON="$ROOT/sources.json"
 STATUS_DIR="$ROOT/.skima"
@@ -128,6 +129,32 @@ else
   C_RED=""
 fi
 
+export SKIMA_COLOR="$COLOR_ENABLED"
+
+# ---------------------------------------------------------------------------
+# Optional pretty rendering (cli/render.py + the `rich` package).
+#
+# Skima runs from a fresh clone with nothing installed, so rendering is a
+# best-effort upgrade, never a requirement. Every call site is
+#
+#     render <subcommand> <<< "$rows" || plain_fallback
+#
+# and the plain fallback below each one is the whole output that ships without
+# rich — which is also the only thing python3-free machines ever see, keeping
+# `install`, `list`, `targets` and `root` python3-optional exactly as before.
+#
+# render.py buffers its entire output and writes stdout once, at the end, so a
+# failure part-way through can never produce half a table followed by the
+# fallback's full one. Its stderr is discarded: a missing dependency is not the
+# user's problem to read about.
+# ---------------------------------------------------------------------------
+
+render() {
+  [ -f "$RENDER_PY" ] || return 1
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 "$RENDER_PY" "$@" 2>/dev/null
+}
+
 rel_path() {
   local p="$1"
   case "$p" in
@@ -179,6 +206,10 @@ FS=$'\x1f'
 # stale "status": "active" under library/deprecated/ can therefore not cause
 # an Install.
 # ---------------------------------------------------------------------------
+
+# The Kind enum from CONTEXT.md. Kept as a space-separated string (not an
+# array) so membership is a single `case` test on macOS bash 3.2.
+VALID_KINDS="skill hook plugin agent"
 
 # True when a directory is the root of a Capability. .skima.json is the
 # primary marker; SKILL.md is accepted for Capabilities not yet given one.
@@ -272,6 +303,15 @@ print_library_warnings() {
     [ -n "$w" ] && echo "  $w"
   done <<< "$warnings"
   echo
+}
+
+# Same warnings as one "warn<FS>text" row each, for the renderer.
+library_warning_rows() {
+  local w
+  while IFS= read -r w; do
+    [ -n "$w" ] && printf 'warn%s%s\n' "$FS" "$w"
+  done < <(library_warnings)
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -507,7 +547,20 @@ colorize_status() {
   esac
 }
 
+# Renders CHECK_ROWS. $1 is the rendered section title; $2 is an optional line
+# the plain fallback prints in its place (the rendered rule carries that context
+# for free, the bare table does not).
 print_check_table() {
+  [ "${#CHECK_ROWS[@]}" -gt 0 ] || return 0
+  local title="${1:-Check}" plain_header="${2:-}"
+  if printf '%s\n' "${CHECK_ROWS[@]}" | render check "$title"; then
+    return 0
+  fi
+  [ -n "$plain_header" ] && echo "$plain_header"
+  print_check_table_plain
+}
+
+print_check_table_plain() {
   [ "${#CHECK_ROWS[@]}" -gt 0 ] || return 0
   printf '%s%-26s  %-12s  %-12s  %s%s\n' "$C_BOLD" "NAME" "PINNED" "REMOTE" "STATUS" "$C_RESET"
   local row name url pinned remote status err pinned_short remote_short
@@ -605,8 +658,8 @@ with open(path, "w", encoding="utf-8") as f:
 PY
 }
 
-# Prints "url<FS>path" for one source name from sources.json.
-source_url_and_path() {
+# Prints "url<FS>path<FS>revision" for one source name from sources.json.
+source_record() {
   local name="$1"
   python3 - "$SOURCES_JSON" "$name" <<'PY'
 import json
@@ -621,7 +674,7 @@ with open(path, encoding="utf-8") as f:
 s = (data.get("sources", {}) or {}).get(name)
 if s is None:
     sys.exit(1)
-print(FS.join([s.get("url", ""), s.get("path", f"sources/{name}")]))
+print(FS.join([s.get("url", ""), s.get("path", f"sources/{name}"), s.get("revision", "")]))
 PY
 }
 
@@ -629,11 +682,34 @@ PY
 # Commands
 # ---------------------------------------------------------------------------
 
+# Deliberately just the path, with no label and no decoration beyond bold on a
+# TTY: `cd "$(skima root)"` has to keep working, and that is a pipe, so it lands
+# on the plain branch anyway.
 cmd_root() {
-  echo "$ROOT"
+  printf '%s%s%s\n' "$C_BOLD" "$ROOT" "$C_RESET"
 }
 
 cmd_list() {
+  local rows="" bucket id deprecated
+  rows="$(library_warning_rows)"
+  [ -n "$rows" ] && rows="${rows}"$'\n'
+
+  while IFS=$'\t' read -r bucket id _src; do
+    [ -z "$id" ] && continue
+    rows="${rows}cap${FS}${bucket}${FS}${id}"$'\n'
+  done < <(list_active_capabilities)
+
+  deprecated="$(list_capabilities | awk -F'\t' '$1 == "deprecated"' | wc -l | tr -d ' ')"
+  rows="${rows}dep${FS}${deprecated}"$'\n'
+
+  if printf '%s' "$rows" | render list; then
+    return 0
+  fi
+  cmd_list_plain "$deprecated"
+}
+
+cmd_list_plain() {
+  local deprecated="$1"
   print_library_warnings
   local count=0 bucket id
   while IFS=$'\t' read -r bucket id _src; do
@@ -644,14 +720,29 @@ cmd_list() {
   echo
   echo "$count active $(plural "$count" capability capabilities)"
 
-  local deprecated
-  deprecated="$(list_capabilities | awk -F'\t' '$1 == "deprecated"' | wc -l | tr -d ' ')"
   if [ "$deprecated" -gt 0 ]; then
     echo "$deprecated deprecated $(plural "$deprecated" capability capabilities) (never installed)"
   fi
 }
 
 cmd_targets() {
+  local rows="" _key label detect skills state
+  while IFS=$'\t' read -r _key label detect skills; do
+    if [ -d "$detect" ]; then
+      if [ -d "$skills" ]; then state="detected"; else state="detected-new"; fi
+    else
+      state="skipped"
+    fi
+    rows="${rows}target${FS}${label}${FS}$(tilde_path "$skills")${FS}$(tilde_path "$detect")${FS}${state}"$'\n'
+  done < <(agent_table)
+
+  if printf '%s' "$rows" | render targets; then
+    return 0
+  fi
+  cmd_targets_plain
+}
+
+cmd_targets_plain() {
   echo "Install targets"
   echo
   printf '%s%-20s  %-24s  %s%s\n' "$C_BOLD" "AGENT" "PATH" "DETECTION" "$C_RESET"
@@ -746,40 +837,62 @@ scan_target_entries() {
   done
 }
 
+# Install does the work first and reports once at the end, so the renderer can
+# lay the whole run out as a table. The work itself is symlink swaps — fast
+# enough that there is nothing to watch, and the Web UI only ever sees the
+# captured result anyway.
+#
+# PLAIN_LINES collects the exact plain-text report as the work proceeds, so the
+# fallback costs nothing extra and cannot drift from the rendered one.
 cmd_install() {
-  print_library_warnings
+  local rows="" plain="" warnings="" w
+
+  warnings="$(library_warnings)"
+  if [ -n "$warnings" ]; then
+    plain+="${C_YELLOW}Library validation warnings${C_RESET} (directory is authoritative):"$'\n'
+    while IFS= read -r w; do
+      [ -n "$w" ] || continue
+      rows+="warn${FS}${w}"$'\n'
+      plain+="  $w"$'\n'
+    done <<< "$warnings"
+    plain+=$'\n'
+  fi
 
   local total_caps
   total_caps="$(list_active_capabilities | wc -l | tr -d ' ')"
 
-  local target_labels=() target_paths=() skipped_labels=()
+  local target_labels=() target_paths=() skipped_labels=() skipped_detects=()
   local _key label detect skills
   while IFS=$'\t' read -r _key label detect skills; do
     if [ -d "$detect" ]; then
       target_labels+=("$label")
       target_paths+=("$skills")
     else
-      skipped_labels+=("$label ($(tilde_path "$detect") not found)")
+      skipped_labels+=("$label")
+      skipped_detects+=("$(tilde_path "$detect")")
     fi
   done < <(agent_table)
 
-  echo "Skima install"
-  echo "  monorepo root:       $ROOT"
-  echo "  library:             $LIBRARY_DIR"
-  echo "  active capabilities: $total_caps"
-  echo
+  rows="${rows}head${FS}${ROOT}${FS}${LIBRARY_DIR}${FS}${total_caps}"$'\n'
+  plain+="Skima install"$'\n'
+  plain+="  monorepo root:       $ROOT"$'\n'
+  plain+="  library:             $LIBRARY_DIR"$'\n'
+  plain+="  active capabilities: $total_caps"$'\n\n'
 
   if [ "${#skipped_labels[@]}" -gt 0 ]; then
-    local s
-    echo "Skipped (Agent not detected — nothing created):"
-    for s in "${skipped_labels[@]}"; do
-      echo "  $s"
+    local i
+    plain+="Skipped (Agent not detected — nothing created):"$'\n'
+    for i in "${!skipped_labels[@]}"; do
+      rows="${rows}skipped${FS}${skipped_labels[$i]}${FS}${skipped_detects[$i]}"$'\n'
+      plain+="  ${skipped_labels[$i]} (${skipped_detects[$i]} not found)"$'\n'
     done
-    echo
+    plain+=$'\n'
   fi
 
   if [ "${#target_paths[@]}" -eq 0 ]; then
-    echo "No install targets detected — nothing to do."
+    rows="${rows}notargets${FS}"$'\n'
+    plain+="No install targets detected — nothing to do."$'\n'
+    printf '%s' "$rows" | render install || printf '%s' "$plain"
     return 0
   fi
 
@@ -791,9 +904,9 @@ cmd_install() {
 
     # The Agent is detected; its skills subdirectory is ours to create.
     if ! mkdir -p "$target" 2>/dev/null; then
-      echo "[$name] $target"
-      echo "  FAILED to create the skills directory"
-      echo
+      rows="${rows}targetfail${FS}${name}${FS}$(tilde_path "$target")"$'\n'
+      plain+="[$name] $target"$'\n'
+      plain+="  FAILED to create the skills directory"$'\n\n'
       overall_fail=1
       continue
     fi
@@ -821,27 +934,32 @@ cmd_install() {
 
     scan_target_entries "$target" ${known_ids[@]+"${known_ids[@]}"}
 
-    echo "[$name] $target"
-    echo "  symlinked: $linked   copied: $copied   up-to-date: $skipped   failed: $fail"
+    rows="${rows}target${FS}${name}${FS}$(tilde_path "$target")${FS}${linked}${FS}${copied}${FS}${skipped}${FS}${fail}${FS}${INSTALL_REMOVED_STALE}"$'\n'
+    plain+="[$name] $target"$'\n'
+    plain+="  symlinked: $linked   copied: $copied   up-to-date: $skipped   failed: $fail"$'\n'
     if [ "$fail" -gt 0 ]; then
       overall_fail=1
       local m
       for m in "${fail_msgs[@]}"; do
-        echo "    FAIL $m"
+        rows="${rows}fail${FS}${name}${FS}${m}"$'\n'
+        plain+="    FAIL $m"$'\n'
       done
     fi
     if [ "$INSTALL_REMOVED_STALE" -gt 0 ]; then
-      echo "  removed $INSTALL_REMOVED_STALE stale skima $(plural "$INSTALL_REMOVED_STALE" symlink symlinks) (capability deleted or deprecated)"
+      plain+="  removed $INSTALL_REMOVED_STALE stale skima $(plural "$INSTALL_REMOVED_STALE" symlink symlinks) (capability deleted or deprecated)"$'\n'
     fi
     if [ "${#INSTALL_FOREIGN[@]}" -gt 0 ]; then
       local f
-      echo "  not managed by skima (left untouched):"
+      plain+="  not managed by skima (left untouched):"$'\n'
       for f in "${INSTALL_FOREIGN[@]}"; do
-        echo "    $f"
+        rows="${rows}foreign${FS}${name}${FS}${f}"$'\n'
+        plain+="    $f"$'\n'
       done
     fi
-    echo
+    plain+=$'\n'
   done
+
+  printf '%s' "$rows" | render install || printf '%s' "$plain"
 
   if [ "$overall_fail" -ne 0 ]; then
     return 1
@@ -861,15 +979,15 @@ cmd_check() {
   if [ "$CHECK_TOTAL" -eq 0 ]; then
     echo "No sources tracked in $(rel_path "$SOURCES_JSON")."
     write_status_json full
-    echo "Wrote $(rel_path "$STATUS_FILE")"
+    echo "${C_DIM}Wrote $(rel_path "$STATUS_FILE")${C_RESET}"
     return 0
   fi
 
-  print_check_table
+  print_check_table "Check"
   write_status_json full
 
   echo
-  echo "Wrote $(rel_path "$STATUS_FILE")"
+  echo "${C_DIM}Wrote $(rel_path "$STATUS_FILE")${C_RESET}"
 
   if [ "$CHECK_UNREACHABLE" -eq "$CHECK_TOTAL" ]; then
     echo
@@ -884,36 +1002,36 @@ cmd_check() {
 # pinned revision in sources.json. Prints progress. Never touches library/.
 sync_one() {
   local name="$1"
-  local url path
+  local url path _revision
 
-  if ! IFS="$FS" read -r url path < <(source_url_and_path "$name"); then
-    echo "[$name] FAILED: not found in sources.json"
+  if ! IFS="$FS" read -r url path _revision < <(source_record "$name"); then
+    echo "${C_BOLD}${name}${C_RESET}  ${C_RED}FAILED: not found in sources.json${C_RESET}"
     return 1
   fi
   if [ -z "$url" ]; then
-    echo "[$name] FAILED: missing url in sources.json"
+    echo "${C_BOLD}${name}${C_RESET}  ${C_RED}FAILED: missing url in sources.json${C_RESET}"
     return 1
   fi
   [ -n "$path" ] || path="sources/$name"
 
   local dest="$ROOT/$path"
-  echo "[$name] $url"
+  echo "${C_BOLD}${name}${C_RESET}  ${C_DIM}${url}${C_RESET}"
 
-  echo "  resolving remote HEAD..."
+  echo "  ${C_DIM}resolving remote HEAD...${C_RESET}"
   local sha
   if ! sha="$(git_remote_head "$url")"; then
-    echo "  FAILED: could not reach $url"
+    echo "  ${C_RED}FAILED: could not reach $url${C_RESET}"
     return 1
   fi
-  echo "  remote HEAD: $sha"
+  echo "  ${C_DIM}remote HEAD: $sha${C_RESET}"
 
   local tmp_dir log_file
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/skima-sync-XXXXXX")"
   log_file="$(mktemp "${TMPDIR:-/tmp}/skima-clone-XXXXXX")"
 
-  echo "  cloning to temp dir..."
+  echo "  ${C_DIM}cloning to temp dir...${C_RESET}"
   if ! with_timeout 120 git clone --quiet --depth 1 "$url" "$tmp_dir" >"$log_file" 2>&1; then
-    echo "  FAILED: git clone failed"
+    echo "  ${C_RED}FAILED: git clone failed${C_RESET}"
     sed 's/^/    /' "$log_file" 2>/dev/null || true
     rm -f "$log_file"
     rm -rf "$tmp_dir"
@@ -924,24 +1042,24 @@ sync_one() {
   local cloned_sha
   cloned_sha="$(git -C "$tmp_dir" rev-parse HEAD 2>/dev/null || true)"
   if [ -z "$cloned_sha" ]; then
-    echo "  FAILED: could not resolve cloned HEAD"
+    echo "  ${C_RED}FAILED: could not resolve cloned HEAD${C_RESET}"
     rm -rf "$tmp_dir"
     return 1
   fi
 
-  echo "  syncing tree into $path/ ..."
+  echo "  ${C_DIM}syncing tree into $path/ ...${C_RESET}"
   mkdir -p "$dest"
   if ! rsync -a --delete --exclude='.git' --exclude='.DS_Store' "$tmp_dir/" "$dest/"; then
-    echo "  FAILED: rsync into $path/ failed"
+    echo "  ${C_RED}FAILED: rsync into $path/ failed${C_RESET}"
     rm -rf "$tmp_dir"
     return 1
   fi
   rm -rf "$tmp_dir"
 
-  echo "  updating sources.json revision -> ${cloned_sha:0:12}..."
+  echo "  ${C_DIM}updating sources.json revision -> ${cloned_sha:0:12}...${C_RESET}"
   update_source_revision "$name" "$cloned_sha"
 
-  echo "  done: $name @ ${cloned_sha:0:12}"
+  echo "  ${C_GREEN}done${C_RESET}: $name @ ${cloned_sha:0:12}"
   return 0
 }
 
@@ -980,8 +1098,9 @@ cmd_sync() {
     exit 2
   fi
 
-  echo "Skima sync"
-  echo "  monorepo root: $ROOT"
+  echo "${C_BOLD}Skima sync${C_RESET}  ${C_DIM}refresh Source trees from remote HEAD${C_RESET}"
+  echo "  ${C_DIM}monorepo root:${C_RESET} $ROOT"
+  echo "  ${C_DIM}sources:${C_RESET}       ${#targets[@]}"
   echo
 
   local synced=() failed=()
@@ -996,27 +1115,285 @@ cmd_sync() {
   done
 
   if [ "${#synced[@]}" -gt 0 ]; then
-    echo "Re-checking synced sources..."
     if collect_check_rows "${synced[@]}"; then
-      print_check_table
+      print_check_table "Re-check" "Re-checking synced sources..."
       write_status_json merge
       echo
-      echo "Wrote $(rel_path "$STATUS_FILE")"
+      echo "${C_DIM}Wrote $(rel_path "$STATUS_FILE")${C_RESET}"
     fi
     echo
   fi
 
-  echo "synced: ${#synced[@]}   failed: ${#failed[@]}"
+  local summary_rows=""
+  for name in ${synced[@]+"${synced[@]}"}; do
+    summary_rows="${summary_rows}ok${FS}${name}"$'\n'
+  done
+  for name in ${failed[@]+"${failed[@]}"}; do
+    summary_rows="${summary_rows}fail${FS}${name}"$'\n'
+  done
+
+  if ! printf '%s' "$summary_rows" | render sync-summary; then
+    echo "synced: ${#synced[@]}   failed: ${#failed[@]}"
+    if [ "${#failed[@]}" -gt 0 ]; then
+      echo "  failed: ${failed[*]}"
+    fi
+  fi
+
   if [ "${#failed[@]}" -gt 0 ]; then
-    echo "  failed: ${failed[*]}"
     return 1
   fi
+}
+
+# ---------------------------------------------------------------------------
+# Adoption — Source tree -> Library copy.
+#
+# CONTEXT.md: Adoption is "the deliberate act of placing a Capability from a
+# Source into the Library under a chosen Bucket (with provenance and a pinned
+# Revision)". Deliberate is the operative word, so this command:
+#
+#   * never guesses a Bucket — the caller names it,
+#   * never renames — the Id is the upstream directory name (ADR-0006),
+#   * never overwrites an existing Library copy. An Id already in the Library
+#     means "update this", which is a Change review decision with a diff behind
+#     it, not something a second `adopt` should silently do.
+#
+# The Web UI's "Add to Library" button shells out to exactly this, so both
+# surfaces adopt through one implementation.
+# ---------------------------------------------------------------------------
+
+# A single path component Skima is willing to create or address on disk.
+is_safe_name() {
+  local n="${1:-}"
+  [ -n "$n" ] || return 1
+  case "$n" in
+    .|..) return 1 ;;
+    .*) return 1 ;;
+    *[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  return 0
+}
+
+# Resolves an upstream path (relative to a Source root, "." for the whole
+# repository) to an absolute directory, or returns 1. Every segment is screened
+# and the resolved result must still sit inside the Source root, so a symlink
+# in a Source tree cannot point Adoption at something outside it.
+resolve_upstream_dir() {
+  local src_root="$1" rel="${2:-.}"
+  local dir real root_real
+
+  if [ "$rel" = "." ] || [ -z "$rel" ]; then
+    dir="$src_root"
+  else
+    case "$rel" in
+      /*) return 1 ;;
+    esac
+    local seg
+    local IFS='/'
+    for seg in $rel; do
+      is_safe_name "$seg" || return 1
+    done
+    unset IFS
+    dir="$src_root/$rel"
+  fi
+
+  [ -d "$dir" ] || return 1
+  real="$(cd -P "$dir" >/dev/null 2>&1 && pwd)" || return 1
+  root_real="$(cd -P "$src_root" >/dev/null 2>&1 && pwd)" || return 1
+  case "$real" in
+    "$root_real"|"$root_real"/*) printf '%s\n' "$real" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Prints "<status>\t<bucket>" if a Capability with this Id already exists
+# anywhere in the Library, else nothing.
+find_existing_capability() {
+  local want="$1"
+  list_capabilities | awk -F'\t' -v id="$want" '$3 == id { print $1 "\t" $2; exit }'
+}
+
+write_capability_record() {
+  local dest="$1" id="$2" kind="$3" bucket="$4" source="$5" url="$6" upstream="$7" revision="$8"
+  python3 - "$dest/.skima.json" "$id" "$kind" "$bucket" "$source" "$url" "$upstream" "$revision" <<'PY'
+import json
+import sys
+
+out, cap_id, kind, bucket, source, url, upstream, revision = sys.argv[1:9]
+
+payload = {
+    "id": cap_id,
+    "kind": kind,
+    "bucket": bucket,
+    "status": "active",
+    "provenance": {
+        "source": source,
+        "url": url,
+        "path": upstream,
+        "revision": revision,
+    },
+}
+
+with open(out, "w", encoding="utf-8") as f:
+    json.dump(payload, f, indent=2)
+    f.write("\n")
+PY
+}
+
+cmd_adopt() {
+  ensure_sources_json_or_die
+  need_cmd rsync
+
+  local source_name="" upstream_path="" bucket="" kind="" cap_id=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --bucket) bucket="${2:-}"; shift 2 || true ;;
+      --bucket=*) bucket="${1#--bucket=}"; shift ;;
+      --kind) kind="${2:-}"; shift 2 || true ;;
+      --kind=*) kind="${1#--kind=}"; shift ;;
+      --id) cap_id="${2:-}"; shift 2 || true ;;
+      --id=*) cap_id="${1#--id=}"; shift ;;
+      -*)
+        echo "skima adopt: unknown option '$1'" >&2
+        exit 2
+        ;;
+      *)
+        if [ -z "$source_name" ]; then
+          source_name="$1"
+        elif [ -z "$upstream_path" ]; then
+          upstream_path="$1"
+        else
+          echo "skima adopt: unexpected argument '$1'" >&2
+          exit 2
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [ -z "$source_name" ]; then
+    echo "skima adopt: usage: skima adopt <source> [upstream-path] --bucket <bucket> [--kind <kind>] [--id <id>]" >&2
+    exit 2
+  fi
+  [ -n "$upstream_path" ] || upstream_path="."
+
+  if [ -z "$bucket" ]; then
+    echo "skima adopt: --bucket is required (Adoption chooses a Bucket deliberately)" >&2
+    exit 2
+  fi
+  if ! is_safe_name "$bucket" || [ "$bucket" = "deprecated" ]; then
+    echo "skima adopt: '$bucket' is not a usable Bucket name" >&2
+    exit 2
+  fi
+
+  local url src_rel revision
+  if ! IFS="$FS" read -r url src_rel revision < <(source_record "$source_name"); then
+    echo "skima adopt: unknown source '$source_name' (not in sources.json)" >&2
+    exit 2
+  fi
+  [ -n "$src_rel" ] || src_rel="sources/$source_name"
+
+  local src_dir
+  if ! src_dir="$(resolve_upstream_dir "$ROOT/$src_rel" "$upstream_path")"; then
+    echo "skima adopt: '$upstream_path' is not a directory inside $src_rel/" >&2
+    exit 2
+  fi
+
+  # ADR-0006: the Id is the upstream directory name. For a whole-repository
+  # Capability ("." — a repo that is itself one plugin) there is no upstream
+  # directory below the root, so the Source name is the only honest Id.
+  if [ -z "$cap_id" ]; then
+    if [ "$upstream_path" = "." ]; then
+      cap_id="$source_name"
+    else
+      cap_id="$(basename "$src_dir")"
+    fi
+  fi
+  if ! is_safe_name "$cap_id"; then
+    echo "skima adopt: '$cap_id' is not a usable Capability Id" >&2
+    exit 2
+  fi
+
+  if [ -z "$kind" ]; then
+    if [ -f "$src_dir/.claude-plugin/plugin.json" ]; then
+      kind="plugin"
+    else
+      kind="skill"
+    fi
+  fi
+  case " $VALID_KINDS " in
+    *" $kind "*) ;;
+    *)
+      echo "skima adopt: unknown kind '$kind' (expected one of: $VALID_KINDS)" >&2
+      exit 2
+      ;;
+  esac
+
+  local existing
+  existing="$(find_existing_capability "$cap_id")"
+  if [ -n "$existing" ]; then
+    local ex_status ex_bucket
+    IFS=$'\t' read -r ex_status ex_bucket <<< "$existing"
+    echo "skima adopt: '$cap_id' is already in the Library ($ex_status, bucket '$ex_bucket')." >&2
+    echo "  Adoption never overwrites a Library copy. Update it through Change review instead." >&2
+    exit 1
+  fi
+
+  local bucket_dir="$LIBRARY_DIR/$bucket"
+  local dest="$bucket_dir/$cap_id"
+  local staged="$bucket_dir/.$cap_id.skima-adopt-$$"
+
+  if ! mkdir -p "$bucket_dir" 2>/dev/null; then
+    echo "skima adopt: could not create bucket directory $(rel_path "$bucket_dir")" >&2
+    exit 1
+  fi
+
+  rm -rf -- "$staged" 2>/dev/null || true
+  if ! mkdir "$staged" 2>/dev/null; then
+    echo "skima adopt: could not stage the Library copy" >&2
+    exit 1
+  fi
+
+  # Stage the whole copy first, then rename it into place, so an interrupted
+  # adopt leaves a hidden temp directory rather than a half-populated
+  # Capability that Install would happily push to every Agent.
+  if ! rsync -a --exclude='.git' --exclude='.DS_Store' "$src_dir/" "$staged/"; then
+    rm -rf -- "$staged" 2>/dev/null || true
+    echo "skima adopt: could not copy $src_rel/$upstream_path into the Library" >&2
+    exit 1
+  fi
+
+  # The Library copy is Skima's, so its record is Skima's too — an upstream
+  # .skima.json (if one ever appeared) must not survive as provenance.
+  write_capability_record "$staged" "$cap_id" "$kind" "$bucket" "$source_name" "$url" "$upstream_path" "$revision"
+
+  if ! mv -- "$staged" "$dest" 2>/dev/null; then
+    rm -rf -- "$staged" 2>/dev/null || true
+    echo "skima adopt: could not move the staged copy into place" >&2
+    exit 1
+  fi
+
+  local row="${cap_id}${FS}${kind}${FS}${bucket}${FS}$(rel_path "$dest")${FS}${source_name}${FS}${upstream_path}${FS}${revision}"
+  if printf '%s\n' "$row" | render adopt; then
+    return 0
+  fi
+
+  echo "Adopted $cap_id"
+  echo "  kind:       $kind"
+  echo "  bucket:     $bucket"
+  echo "  library:    $(rel_path "$dest")"
+  echo "  provenance: $source_name $upstream_path @ ${revision:0:12}"
+  echo
+  echo "Run 'skima install' to make it available on every detected Install target."
 }
 
 cmd_status() {
   need_cmd python3
   if [ ! -f "$STATUS_FILE" ]; then
     echo "No status recorded yet — run 'skima check' first."
+    return 0
+  fi
+
+  if render status "$STATUS_FILE"; then
     return 0
   fi
 
@@ -1070,6 +1447,13 @@ PY
 }
 
 usage() {
+  if render help; then
+    return 0
+  fi
+  usage_plain
+}
+
+usage_plain() {
   cat <<'EOF'
 skima — personal control plane for installing agent capabilities
 
@@ -1085,6 +1469,17 @@ Usage:
                       those Sources and merge into .skima/status.json. With no
                       names, refreshes every Source. Never touches library/ —
                       Adoption into the Library stays a deliberate step.
+  skima adopt <source> [upstream-path] --bucket <bucket> [--kind <kind>] [--id <id>]
+                      Adopt a Capability out of a Source tree into the Library
+                      as an editable Library copy, with provenance pinned to
+                      that Source's current Revision. upstream-path is relative
+                      to sources/<source>/ and defaults to "." (the whole
+                      repository). The Id defaults to the upstream directory
+                      name; the Kind is inferred (plugin if the directory ships
+                      .claude-plugin/plugin.json, else skill). Refuses if the
+                      Id is already in the Library — updating an existing
+                      Library copy is a Change review decision, not a re-adopt.
+                      The Web UI's "Add to Library" runs this same command.
   skima status        Pretty-print .skima/status.json (run 'skima check'
                       first if it doesn't exist yet).
   skima install       Install every active Capability into each detected
@@ -1115,6 +1510,7 @@ main() {
   case "$cmd" in
     check) cmd_check ;;
     sync) cmd_sync "$@" ;;
+    adopt) cmd_adopt "$@" ;;
     status) cmd_status ;;
     install) cmd_install ;;
     list) cmd_list ;;
@@ -1122,8 +1518,10 @@ main() {
     root) cmd_root ;;
     help|-h|--help) usage ;;
     *)
+      # Plain, always: this goes to stderr, and the renderer only ever writes
+      # to stdout.
       echo "skima: unknown command '$cmd'" >&2
-      usage >&2
+      usage_plain >&2
       exit 2
       ;;
   esac

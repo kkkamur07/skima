@@ -57,7 +57,7 @@ The shape of a **Capability**: `skill`, `hook`, `plugin`, or `agent`. Install be
 _Avoid_: type, format
 
 **Adoption**:
-The deliberate act of placing a **Capability** from a **Source** into the **Library** under a chosen **Bucket** (with provenance and a pinned **Revision**).
+The deliberate act of placing a **Capability** from a **Source** into the **Library** under a chosen **Bucket** (with provenance and a pinned **Revision**). Available from both surfaces: `skima adopt` in the **CLI**, and the **Explore** page in the **Web UI**, which invokes that same command. It never overwrites an existing **Library copy** — an **Id** already in the **Library** means "update this", which is a **Change review** decision.
 _Avoid_: install (install is Library → Agent), import, sync (sync refreshes Sources)
 
 **Change review**:
@@ -88,12 +88,16 @@ _Avoid_: sync state, health (too broad), drift
 The inventory of **Sources** **Skima** is tracking — visible in the **Web UI** so the user can see exactly which repositories feed **Change review**.
 _Avoid_: bookmarks, remotes list
 
+**Explore**:
+Browsing a **Source**'s committed tree to decide what to **Adopt**, and the **Web UI** page where that happens. A **Source** tree is upstream's layout and carries no **Capability record**, so **Explore** recognises **Capabilities** by shape — `SKILL.md`, `.claude-plugin/plugin.json`, `hooks/hooks.json` — with the outermost match winning. It marks which of them are already **Library copies** and offers **Adoption** on the rest.
+_Avoid_: search (search is the deferred open-ended kind, over repositories **Skima** does not track), discovery (the mechanism, not the act)
+
 **CLI**:
-The command-line surface of **Skima** for machine actions: sync **Sources**, install to **Install targets**, and other automation. Lives at `cli/`.
+The command-line surface of **Skima** for machine actions: sync **Sources**, adopt from a **Source** into the **Library**, install to **Install targets**, and other automation. Lives at `cli/`. Every machine action is implemented here, including the ones the **Web UI** offers.
 _Avoid_: terminal app
 
 **Web UI**:
-The local-only browser surface of **Skima** for **Source list**, **Change review**, and browsing **Buckets** / **Status**. Lives at `web/`. Not hosted in v1.
+The local-only browser surface of **Skima** for **Source list**, **Change review**, **Explore**, and browsing **Buckets** / **Status**. Lives at `web/`. Not hosted in v1. Where it performs a machine action — **Adoption** from **Explore**, **Install**, **Check** — it does so by invoking the **CLI**, never by reimplementing it.
 _Avoid_: dashboard, app, SaaS
 
 **Install**:
@@ -117,6 +121,9 @@ _Avoid_: deploy, publish, sync (sync is for Sources)
 - **Skima** tracks zero or more **Sources** (shown in the **Source list**); sync refreshes committed trees under `sources/` to a newer **Revision**
 - A **Capability** may originate from a **Source** (via **Adoption**) or be authored directly in the **Library**
 - **Adoption** is curated: new upstream material appears in **Change review**, not automatically in the **Library**
+- **Adoption** is reachable from both surfaces — `skima adopt` in the **CLI**, **Explore** in the **Web UI** — and the **Web UI** performs it by invoking the **CLI**, so there is one implementation and the **CLI**'s validation is the load-bearing one
+- **Adoption** refuses an **Id** already present anywhere in the **Library**; bringing an existing **Library copy** forward is a **Change review** decision, not a second **Adoption**
+- **Explore** recognises **Capabilities** inside a **Source** by shape, outermost match winning, because a **Source** tree has no **Capability record**; agent definitions and slash commands are single files rather than directories, so they are not adoptable alone and are listed as part of what a plugin brings
 - An adopted **Capability** is always a **Library copy** (editable), keeps upstream **Id**, and carries **Provenance**
 - After **Adoption** or an accepted upstream update into the **Library copy**, **Skima** runs **Install** across all **Install targets**
 - **Install** prefers symlink to the **Library copy**; copy is fallback only
@@ -128,7 +135,7 @@ _Avoid_: deploy, publish, sync (sync is for Sources)
 - Open-ended search, validate, and suggest of *unknown* external skills — deferred
 - Per-Capability semver — deferred; **Revision** is git-based
 - Read-only pins as the installable body — rejected; **Library copy** is the body
-- Divergent local **Ids** for adopted **Capabilities** — rejected; align to upstream **Id**
+- Divergent local **Ids** for adopted **Capabilities** — rejected; align to upstream **Id**. `skima adopt --id` exists only for upstream directories whose name is not an identity (a bundle whose directory is just `hooks`), not for renaming to taste
 - Hosted / multi-user **Web UI** — deferred; local-only
 - Split repos or local-only Source cache — rejected; one **Monorepo**
 - Git submodules or nested `.git` under `sources/` — rejected
@@ -174,7 +181,13 @@ _(none)_
 > **Domain expert:** "The **Source list** — every **Source** under `sources/` that feeds **Change review**."
 
 > **Dev:** "Do I manage this in the browser or the terminal?"
-> **Domain expert:** "Both, locally: **CLI** for sync/install; **Web UI** for **Source list**, **Change review**, and browsing."
+> **Domain expert:** "Both, locally. The **Web UI** is where you look — **Source list**, **Change review**, **Explore**, browsing — and it can adopt, install and check by running the **CLI** for you. The **CLI** is where those actions actually live, and sync is **CLI**-only."
+
+> **Dev:** "Can I adopt from the browser now?"
+> **Domain expert:** "Yes — 'Add to Library' on any **Capability** the **Explore** page finds in a **Source**. It runs `skima adopt`, so the browser is a surface rather than a second implementation: if the **CLI** would refuse it, the button refuses it too."
+
+> **Dev:** "Why does the Explore page not let me adopt a single agent file?"
+> **Domain expert:** "Because a **Capability** is a directory and `agents/code-reviewer.md` is one file. It comes with the plugin that ships it, and **Explore** lists it as part of what that plugin brings."
 
 > **Dev:** "Is the Library a separate GitHub repo from the app?"
 > **Domain expert:** "No — one **Monorepo**: `cli/`, `web/`, `library/`, `sources/`."

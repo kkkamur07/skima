@@ -1,93 +1,68 @@
 # Skima
 
-**Skima** (skill management) is a personal control plane for owning, grouping, and installing agent capabilities — skills, hooks, plugins, agents — across coding agents (Cursor, Claude Code, and others) from one git-backed library.
+## What is this?
 
-It replaces ad hoc copying of skills into `~/.cursor/skills` or `~/.claude/skills` with a single **Monorepo** you curate, version, and install from in one shot.
+Skima (skill management) is a personal control plane for agent capabilities. You keep skills, hooks, plugins, and agents in one git-backed library, then install them into Cursor, Claude Code, and other coding agents from that single place.
 
-See `CONTEXT.md` for the full domain language (Capability, Bucket, Source, Adoption, Install, etc.) and `docs/adr/` for the decisions behind this layout.
+Instead of copying files into `~/.cursor/skills` or `~/.claude/skills` by hand, you curate a monorepo and push the active set out with one command.
 
-## Layout
-
-```
-cli/        Command-line surface: check/sync Sources, install to detected Agents.
-web/        Local-only Web UI: Source list, Change review, browse Buckets/Status.
-library/    The curated Library — source of truth for what gets installed.
-sources/    Tracked upstream repos, committed as flat trees pinned to a Revision.
-docs/adr/   Architecture decision records for Skima itself.
-backups/    Pre-reorg recovery snapshot. Gitignored — local only.
-CONTEXT.md  Domain language / glossary for this project.
-sources.json  The Source list: url + pinned Revision per tracked repo.
-todo.md     Deferred and in-flight work.
-.skima/     Derived Source status from the last check. Gitignored, per-machine.
-```
-
-### `library/`
-
-Capabilities are grouped by **Bucket** (domain of use), one home per Capability. Buckets are user-defined and evolving — added, split, and renamed as the Library grows, so this list is a snapshot rather than a fixed enum:
+The repo has four working parts:
 
 ```
-library/
-  academic/ architecture/ learning/ ops/ planning/
-  python/ quality/ review/ security/ thinking/ web/
-  deprecated/   # Status = deprecated, nested by bucket; never installed
+library/    Curated copies you own. This is what gets installed.
+sources/    Upstream repos, committed as flat trees at a pinned revision.
+cli/        Check, sync, adopt, and install.
+web/        Local browser UI for Sources, Explore, Library, and Change review.
 ```
 
-Each Capability lives at `library/<bucket>/<id>/` and is an editable **Library copy** — upstream Source changes never overwrite it silently; you accept updates deliberately via Change review.
+Domain vocabulary lives in `CONTEXT.md`. Design decisions live in `docs/adr/`.
 
-Alongside each Capability's own files sits a **Capability record**, `.skima.json`, holding its Id, Kind, Bucket, Status, and Provenance. Kind and Provenance live only there; Id, Bucket, and Status are also encoded in the path, and **the directory wins** if the two ever disagree — a mismatched record is a validation warning, never an override. See `docs/adr/0004-capability-record-and-directory-authority.md`.
+## Why is this valuable to me?
 
-### `sources/`
+If you use more than one agent, or more than one machine, ad hoc skill folders drift. You lose track of what is installed, copies diverge, and upstream updates overwrite local edits without warning.
 
-One directory per tracked upstream GitHub repo, committed as a flat tree (no nested `.git`, no submodules) at a pinned Revision. `sources.json` records the URL and Revision for each. This is what Change review compares against when a Source moves ahead of its pin.
+Skima treats `library/` as the source of truth. Upstream stays pinned under `sources/`. You adopt what you want into a Bucket, edit those Library copies freely, and install only active entries. On a new machine you clone this repo and run install again.
 
-## Quickstart
+You also get a deliberate update path: `skima check` tells you which Sources moved, Change review shows what is behind, and Adoption never silently rewrites a Library copy.
 
-Nothing to install — the CLI is bash + `python3`, and the Web UI is Python stdlib with no build step. Run both from a fresh clone.
+## How to use it?
 
-**Install** (push the Library into detected Agents):
+You need git and python3. The CLI is bash plus python3. The Web UI is Python stdlib. There is no `pip install` and no build step.
+
+### On a new machine
 
 ```bash
-./cli/skima install
+git clone git@github.com:kkkamur07/skima.git
+cd skima
+./cli/skima targets    # see which Agents Skima detected
+./cli/skima install    # symlink (or copy) every active Capability into them
 ```
 
-This detects installed Agents by their config directory (Cursor via `~/.cursor`, Claude Code via `~/.claude`, plus the shared `~/.agents/skills` convention) and materializes every `active` Capability into each, symlinking to the `library/` copy where possible and falling back to a file copy otherwise. **Agents that are not installed are skipped, and no directory is created for them.** Run `./cli/skima targets` first to see what would be written to.
+Install looks for Cursor (`~/.cursor`), Claude Code (`~/.claude`), and the shared `~/.agents/skills` convention. Agents that are not installed are skipped. No directories are invented for missing Agents.
 
-**Check Source freshness** (compare each pinned Revision to its remote head):
+### Day to day
 
 ```bash
-./cli/skima check     # git ls-remote, no clone; writes .skima/status.json
-./cli/skima status    # pretty-print the last check
+./cli/skima check              # compare pinned revisions to remote HEADs
+./cli/skima status             # print the last check
+./cli/skima sync [name...]     # refresh Source trees; leave Library alone
+./cli/skima adopt <source> <path> --bucket <bucket>   # copy into Library
+./cli/skima install            # push Library into detected Agents
+./cli/skima help               # full command reference
 ```
 
-**Sync a Source** (refresh a tracked tree to a newer Revision):
+Local UI:
 
 ```bash
-./cli/skima sync [name...]    # all Sources when given no names
+python3 web/server.py          # http://127.0.0.1:4567
 ```
 
-Sync refreshes `sources/<name>/` and updates the pin in `sources.json`. It never touches `library/` — bringing an upstream change into a Library copy is **Adoption**, a deliberate step.
+The UI binds loopback only. Use it to browse Sources, Explore adoptable Capabilities, inspect the Library by Bucket, and run a check. Adoption and install from the UI call the same CLI commands.
 
-`./cli/skima help` documents all eight commands, the `NO_COLOR` and `SKIMA_NETWORK_TIMEOUT` environment variables, and the exit codes. See `cli/README.md` for the full reference.
+### Layout notes
 
-**Web UI** (browse the Library, review Source freshness):
+Capabilities live at `library/<bucket>/<id>/`, with a `.skima.json` record for Kind and Provenance. Id, Bucket, and Status come from the directory path; if the record disagrees, the directory wins.
 
-```bash
-python3 web/server.py        # http://127.0.0.1:4567
-```
+Deprecated Capabilities sit under `library/deprecated/` and are never installed.
 
-Binds loopback only and is not hosted. It reads the Library and Sources, and its one write action — the "Run check" button — shells out to `skima check`, which makes network calls and rewrites `.skima/status.json`. See `web/README.md`.
-
-## Backups
-
-A pre-reorg snapshot of this workspace lives in `backups/20260803-144647/`. It is **gitignored** — 113M of archives plus six embedded upstream clones that git would otherwise turn into empty phantom submodules. It is a local recovery point, not tracked history:
-
-- `repos-workdir/` — the original `repos/` tree (pre-migration source clones)
-- `skills-use-workdir/` — the original `skills-use/` tree (pre-migration curated skills)
-- `skills-use.zip` — the original zip archive
-- `repos.tar.gz`, `skills-use.tar.gz`, `dot-cursor-skills.tar.gz`, `dot-agents-skills.tar.gz` — compressed snapshots
-- `dot-claude-skills.MISSING.txt` — records that `~/.claude/skills` did not exist at snapshot time
-- `nested-git/humanizer-dot-git.tar.gz` — the `.git` removed from the humanizer Library copy
-- `source-revisions.txt` — the Source Revisions pinned at snapshot time
-- `CONTEXT.md`, `todo.md`, `docs/` — point-in-time copies
-
-Nothing in `backups/` is touched by day-to-day Skima use; it's the recovery point if the migration into `sources/`/`library/` needs to be redone. Because it is gitignored, it lives on this machine only — treat it as such.
+`sources.json` lists every tracked upstream URL and pinned revision. `.skima/` is local machine state from the last check and is gitignored. `backups/` is a local recovery snapshot and is also gitignored.
