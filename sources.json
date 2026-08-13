@@ -2,7 +2,7 @@
   "sources": {
     "academic-research-skills": {
       "url": "https://github.com/imbad0202/academic-research-skills",
-      "revision": "49e79a7c99296e431cecce60225bf8f5393f3fbb",
+      "revision": "3021248c4609296404e6a869204041fefc79170e",
       "path": "sources/academic-research-skills"
     },
     "agent-research-skills": {
@@ -12,12 +12,12 @@
     },
     "agent-skills": {
       "url": "https://github.com/addyosmani/agent-skills",
-      "revision": "bdf76c7c6b7b3b3e01bb15c9fdc42ac5351855c1",
+      "revision": "d2478bf0c73a6357df39a3ed6aff16acaa218843",
       "path": "sources/agent-skills"
     },
     "mattpocock-skills": {
       "url": "https://github.com/mattpocock/skills",
-      "revision": "2ab958093e83e0ec752e6c1c5932da465bf23e0c",
+      "revision": "84fdeffd12f2ee307994d1eb6feb48173b6e0502",
       "path": "sources/mattpocock-skills"
     },
     "supabase-agent-skills": {
@@ -39,6 +39,11 @@
       "url": "https://github.com/blader/humanizer",
       "revision": "523374dee72d67c7b2b5f858ea0094ffda49c3ac",
       "path": "sources/humanizer"
+    },
+    "graphify": {
+      "url": "https://github.com/Graphify-Labs/graphify",
+      "revision": "3d19463484ebcf773b399ddad9fd3363b2ab3bff",
+      "path": "sources/graphify"
     }
   }
 }

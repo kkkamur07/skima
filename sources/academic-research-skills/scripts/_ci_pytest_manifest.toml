@@ -361,6 +361,14 @@ id = "611-reviewer-sprint-prompt-sync"
 path = "scripts/test_check_reviewer_sprint_prompt_sync.py"
 
 [[pytest]]
+id = "610-receipt-enum-sync"
+path = "scripts/test_check_receipt_enum_sync.py"
+
+[[pytest]]
+id = "610-step5-recompute-calculator"
+path = "scripts/test_recompute_receipts.py"
+
+[[pytest]]
 id = "611-reviewer-role-label"
 path = "scripts/test_check_reviewer_role_label.py"
 
@@ -387,3 +395,7 @@ path = "scripts/test_render_harness_retirement_issue.py"
 [[pytest]]
 id = "633-command-frontmatter-name"
 path = "scripts/test_check_command_frontmatter_name.py"
+
+[[pytest]]
+id = "654-heldout-measurement-contract"
+path = "scripts/test_check_heldout_measurement_report.py"

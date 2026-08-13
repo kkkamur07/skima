@@ -107,6 +107,8 @@ configuration directory:
 | --- | --- | --- |
 | Cursor | `~/.cursor` exists | `~/.cursor/skills` |
 | Claude Code | `~/.claude` exists | `~/.claude/skills` |
+| Pi | `~/.pi/agent` exists (or `$PI_CODING_AGENT_DIR`) | `<pi-agent-dir>/skills` |
+| OpenCode | `~/.config/opencode` exists (or `$XDG_CONFIG_HOME/opencode`) | `<opencode-config>/skills` |
 | Shared agents dir | `~/.agents/skills` exists | `~/.agents/skills` |
 
 Skima creates the `skills/` subdirectory on first install if it is missing, and nothing else. It never
@@ -117,11 +119,13 @@ symlinks on your machine. `cli/skima targets` shows exactly what was detected an
 Install targets — Agents detected on this machine
 
 AGENT              INSTALLS INTO     DETECTION
-Cursor             ~/.cursor/skills  detected (~/.cursor exists)
-Claude Code        ~/.claude/skills  detected (~/.claude exists)
-Shared agents dir  ~/.agents/skills  skipped (~/.agents/skills not found — Agent not installed)
+Cursor             ~/.cursor/skills           detected (~/.cursor exists)
+Claude Code        ~/.claude/skills           detected (~/.claude exists)
+Pi                 ~/.pi/agent/skills         detected (~/.pi/agent exists)
+OpenCode           ~/.config/opencode/skills  skipped (~/.config/opencode not found — Agent not installed)
+Shared agents dir  ~/.agents/skills           skipped (~/.agents/skills not found — Agent not installed)
 
-2 install targets detected   skipped Agents are never written to
+3 install targets detected   skipped Agents are never written to
 ```
 
 ### Symlink first, copy as fallback

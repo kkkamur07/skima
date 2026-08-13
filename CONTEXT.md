@@ -33,7 +33,7 @@ Comparing a **Source**'s pinned **Revision** to its remote HEAD (via `git ls-rem
 _Avoid_: poll, sync (sync refreshes the tree; **Check** only compares shas)
 
 **Agent**:
-A coding tool installed on the machine that can consume capabilities from the **Library** (e.g. Cursor, Claude Code, Codex).
+A coding tool installed on the machine that can consume capabilities from the **Library** (e.g. Cursor, Claude Code, Pi, OpenCode, Codex).
 _Avoid_: IDE (too narrow), coding agent product (verbose)
 
 **Install target**:
@@ -110,8 +110,9 @@ _Avoid_: deploy, publish, sync (sync is for Sources)
 - **Skima** is one **Monorepo**: `cli/`, `web/`, `library/`, `sources/`
 - A **Library** is the source of truth **Skima** installs from
 - **Skima** discovers zero or more **Agents** and treats each as an **Install target**
-- Cursor and Claude Code are expected **Install targets**; other **Agents** are included only when detected
+- Cursor and Claude Code are expected **Install targets**; Pi and OpenCode are also supported when detected; other **Agents** are included only when detected
 - Cursor global skills path: `~/.cursor/skills`. Claude Code global skills path: `~/.claude/skills` (created on first **Install** if missing)
+- Pi global skills path: `~/.pi/agent/skills` (or `$PI_CODING_AGENT_DIR/skills`); OpenCode global skills path: `~/.config/opencode/skills` (or `$XDG_CONFIG_HOME/opencode/skills`)
 - Day-1 seed (done, 2026-08-03): the former `repos/` seeded `sources/` and the former `skills-use/` seeded `library/` by **Bucket**; both original trees now live only under `backups/`, and `~/.cursor/skills` is reconciled by **Install** (it was never a second Library)
 - Every **Capability** has exactly one **Id**, belongs to exactly one **Bucket**, has exactly one **Status**, and has exactly one **Kind**
 - Every **Capability** has exactly one **Capability record**, which is where those four facts and its **Provenance** are written; the directory layout is authoritative wherever the two disagree

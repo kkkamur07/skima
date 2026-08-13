@@ -1,0 +1,12 @@
+{
+  "id": "graphify",
+  "kind": "skill",
+  "bucket": "architecture",
+  "status": "active",
+  "provenance": {
+    "source": "graphify",
+    "url": "https://github.com/Graphify-Labs/graphify",
+    "path": "graphify/skills/claude",
+    "revision": "07b9143d4b90b1e1cb88dc71423f742a501efd29"
+  }
+}

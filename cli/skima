@@ -55,12 +55,20 @@ STATUS_FILE="$STATUS_DIR/status.json"
 # One row per known Agent: key<TAB>label<TAB>detect-path<TAB>skills-path.
 # Kept as a function (not an associative array) because macOS ships bash 3.2.
 agent_table() {
-  printf '%s\t%s\t%s\t%s\n' "cursor" "Cursor"      "$HOME/.cursor"        "$HOME/.cursor/skills"
-  printf '%s\t%s\t%s\t%s\n' "claude" "Claude Code" "$HOME/.claude"        "$HOME/.claude/skills"
+  printf '%s\t%s\t%s\t%s\n' "cursor"   "Cursor"          "$HOME/.cursor"                           "$HOME/.cursor/skills"
+  printf '%s\t%s\t%s\t%s\n' "claude"   "Claude Code"     "$HOME/.claude"                           "$HOME/.claude/skills"
+  # Pi's global resource directory can be overridden with PI_CODING_AGENT_DIR.
+  # Its default is ~/.pi/agent; skills live in the skills/ child directory.
+  local pi_agent_dir="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+  printf '%s\t%s\t%s\t%s\n' "pi"       "Pi"              "$pi_agent_dir"                          "$pi_agent_dir/skills"
+  # OpenCode follows XDG_CONFIG_HOME when set and keeps global skills in
+  # <config>/opencode/skills. The config directory is the detection signal.
+  local opencode_config="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
+  printf '%s\t%s\t%s\t%s\n' "opencode" "OpenCode"        "$opencode_config"                       "$opencode_config/skills"
   # No single config dir identifies the shared ~/.agents convention, so the
   # skills directory itself is the detection signal: Skima uses it when it is
   # already there and never creates it.
-  printf '%s\t%s\t%s\t%s\n' "agents" "Shared agents dir" "$HOME/.agents/skills" "$HOME/.agents/skills"
+  printf '%s\t%s\t%s\t%s\n' "agents"   "Shared agents dir" "$HOME/.agents/skills"                    "$HOME/.agents/skills"
 }
 
 # Every skills path Skima is ever allowed to write inside, detected or not.
