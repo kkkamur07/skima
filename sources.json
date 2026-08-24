@@ -44,6 +44,11 @@
       "url": "https://github.com/Graphify-Labs/graphify",
       "revision": "3d19463484ebcf773b399ddad9fd3363b2ab3bff",
       "path": "sources/graphify"
+    },
+    "mermaid-skill": {
+      "url": "https://github.com/WH-2099/mermaid-skill",
+      "revision": "982d9035231312c527197501a882cf6c8f4394cc",
+      "path": "sources/mermaid-skill"
     }
   }
 }

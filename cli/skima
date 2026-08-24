@@ -1193,6 +1193,21 @@ is_safe_name() {
   return 0
 }
 
+# Hidden directories an Agent uses to hold project-local Capabilities
+# (Claude Code's .claude/skills/, Cursor's .cursor/skills/, the shared
+# .agents/skills/). Upstream repositories often ship a skill under one of
+# these, so an upstream path may pass through them. Every other dot-prefixed
+# segment stays rejected; Buckets and Ids never get this allowance.
+AGENT_HOME_DIRS=".claude .cursor .agents"
+
+is_safe_upstream_segment() {
+  local n="${1:-}"
+  case " $AGENT_HOME_DIRS " in
+    *" $n "*) return 0 ;;
+  esac
+  is_safe_name "$n"
+}
+
 # Resolves an upstream path (relative to a Source root, "." for the whole
 # repository) to an absolute directory, or returns 1. Every segment is screened
 # and the resolved result must still sit inside the Source root, so a symlink
@@ -1210,7 +1225,7 @@ resolve_upstream_dir() {
     local seg
     local IFS='/'
     for seg in $rel; do
-      is_safe_name "$seg" || return 1
+      is_safe_upstream_segment "$seg" || return 1
     done
     unset IFS
     dir="$src_root/$rel"

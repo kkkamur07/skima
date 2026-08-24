@@ -121,6 +121,16 @@ MAX_BODY_BYTES = 64 * 1024
 DOC_SUFFIXES = {".md", ".markdown", ".txt"}
 DOC_EXACT_NAMES = {"LICENSE", "LICENCE", "NOTICE", ".skima.json"}
 SKIP_DIR_NAMES = {".git", ".github", "node_modules", "__pycache__", ".venv"}
+# Hidden directories an Agent uses to hold project-local Capabilities
+# (.claude/skills/, .cursor/skills/, .agents/skills/). Upstream repositories
+# often ship a skill under one of these, so Explore descends into them; every
+# other dot-prefixed directory is still skipped. Mirrors AGENT_HOME_DIRS in
+# cli/skima so both surfaces agree on what is adoptable.
+AGENT_HOME_DIRS = {".claude", ".cursor", ".agents"}
+
+
+def _is_hidden_dir_name(name):
+    return name.startswith(".") and name not in AGENT_HOME_DIRS
 DOC_SCAN_MAX_DEPTH = 3
 DOC_SCAN_MAX_FILES = 400
 MAX_DOC_BYTES = 512 * 1024
@@ -606,7 +616,7 @@ def capability_components(cap_dir, is_skill_root):
                 except OSError:
                     return
                 for entry in entries:
-                    if entry.is_dir() and not entry.name.startswith(".") and entry.name not in SKIP_DIR_NAMES:
+                    if entry.is_dir() and not _is_hidden_dir_name(entry.name) and entry.name not in SKIP_DIR_NAMES:
                         walk(entry, depth + 1)
 
             walk(sub, 1)
@@ -716,7 +726,7 @@ def find_source_capabilities(root):
         for entry in entries:
             if len(found) >= SOURCE_SCAN_MAX_CAPS:
                 return
-            if not entry.is_dir() or entry.name.startswith(".") or entry.name in SKIP_DIR_NAMES:
+            if not entry.is_dir() or _is_hidden_dir_name(entry.name) or entry.name in SKIP_DIR_NAMES:
                 continue
             if not _resolves_inside(entry, root):
                 continue
