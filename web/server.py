@@ -122,11 +122,11 @@ DOC_SUFFIXES = {".md", ".markdown", ".txt"}
 DOC_EXACT_NAMES = {"LICENSE", "LICENCE", "NOTICE", ".skima.json"}
 SKIP_DIR_NAMES = {".git", ".github", "node_modules", "__pycache__", ".venv"}
 # Hidden directories an Agent uses to hold project-local Capabilities
-# (.claude/skills/, .cursor/skills/, .agents/skills/). Upstream repositories
-# often ship a skill under one of these, so Explore descends into them; every
-# other dot-prefixed directory is still skipped. Mirrors AGENT_HOME_DIRS in
-# cli/skima so both surfaces agree on what is adoptable.
-AGENT_HOME_DIRS = {".claude", ".cursor", ".agents"}
+# (.claude/skills/, .cursor/skills/, .devin/skills/, .agents/skills/). Upstream
+# repositories often ship a skill under one of these, so Explore descends into
+# them; every other dot-prefixed directory is still skipped. Mirrors
+# AGENT_HOME_DIRS in cli/skima so both surfaces agree on what is adoptable.
+AGENT_HOME_DIRS = {".claude", ".cursor", ".devin", ".agents"}
 
 
 def _is_hidden_dir_name(name):

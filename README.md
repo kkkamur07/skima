@@ -38,7 +38,7 @@ cd skima
 ./cli/skima install    # symlink (or copy) every active Capability into them
 ```
 
-Install looks for Cursor (`~/.cursor`), Claude Code (`~/.claude`), Pi (`~/.pi/agent`), OpenCode (`~/.config/opencode`, or `$XDG_CONFIG_HOME/opencode`), and the shared `~/.agents/skills` convention. If an Agent is not installed, Skima skips it and never creates a directory for it.
+Install looks for Cursor (`~/.cursor`), Claude Code (`~/.claude`), Pi (`~/.pi/agent`), OpenCode (`~/.config/opencode`, or `$XDG_CONFIG_HOME/opencode`), Devin (`~/.config/devin`, or `$XDG_CONFIG_HOME/devin`), and the shared `~/.agents/skills` convention. If an Agent is not installed, Skima skips it and never creates a directory for it.
 
 ### Day to day
 
